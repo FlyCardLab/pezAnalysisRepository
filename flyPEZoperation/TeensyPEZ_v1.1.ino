@@ -860,9 +860,11 @@ uint16_t peltierPWM = 0;
    
   if (status == 1 || status == 2)
   {
-    if (feedback != oldfeedback && feedback != 0)
+    if (feedback != oldfeedback)
     {
-      //xprintf(PSTR("$FB,%u\r\n"), feedback);
+      Serial.print("$FB,");
+      Serial.print(feedback);
+      Serial.print("\r\n");
       oldfeedback = feedback;
     }
     #ifdef DEBUG
@@ -953,10 +955,19 @@ char in = Serial1.read();
       if (in == '\r')
       {
         stateTH = 0;
-       // process the data (format: Hxxx.x Tsxx.x<cr>)
-       // first some sanity checking (pretty lame though, only checks to see if the H & T is in the buffer at the right place)
-        if ((buff[0] == 'H') && (buff[7] == 'T'))
+       // process the data. Format is normally Hxxx.x Tsxx.x<cr> (2 integer digits for
+       // humidity), but the sensor does NOT zero-pad the humidity value, so below 10%
+       // it drops the tens digit entirely and the line is exactly 1 character shorter
+       // from that point on (e.g. "H9.9 T+23.1" instead of "H 45.5 T+23.1"). Handle both
+       // known layouts explicitly, and validate every byte used is actually a digit
+       // before doing arithmetic on it -- previously a mismatched byte could go negative
+       // and silently wrap around in the uint16_t humidityNow/tempNow, producing garbage
+       // readings (e.g. "6304%") instead of failing safe.
+        if ((buff[0] == 'H') && (buff[4] == '.') && (buff[7] == 'T') &&
+            (buff[2] >= '0') && (buff[2] <= '9') && (buff[3] >= '0') && (buff[3] <= '9') && (buff[5] >= '0') && (buff[5] <= '9') &&
+            (buff[9] >= '0') && (buff[9] <= '9') && (buff[10] >= '0') && (buff[10] <= '9') && (buff[12] >= '0') && (buff[12] <= '9'))
         {
+          // >=10% humidity: 2 integer digits
           humidityNow = ((buff[2] - 0x30) * 100) + ((buff[3] - 0x30) * 10) + (buff[5] - 0x30);
           tempNow = ((buff[9] - 0x30) * 100) + ((buff[10] - 0x30) * 10) + ((buff[12]) - 0x30);
         // check the sign and flip if needed
@@ -965,6 +976,20 @@ char in = Serial1.read();
         // indicate we have valid data
           thValid = 1;
         }
+        else if ((buff[0] == 'H') && (buff[3] == '.') && (buff[6] == 'T') &&
+            (buff[2] >= '0') && (buff[2] <= '9') && (buff[4] >= '0') && (buff[4] <= '9') &&
+            (buff[8] >= '0') && (buff[8] <= '9') && (buff[9] >= '0') && (buff[9] <= '9') && (buff[11] >= '0') && (buff[11] <= '9'))
+        {
+          // <10% humidity: sensor omits the tens digit, whole line shifted 1 char earlier
+          humidityNow = ((buff[2] - 0x30) * 10) + (buff[4] - 0x30);
+          tempNow = ((buff[8] - 0x30) * 100) + ((buff[9] - 0x30) * 10) + ((buff[11]) - 0x30);
+        // check the sign and flip if needed
+          if (buff[7] == '-')
+            tempNow = -tempNow;
+        // indicate we have valid data
+          thValid = 1;
+        }
+        // else: malformed line -- keep the previous (stale) humidityNow/tempNow/thValid
     }
     else
     {

@@ -1711,18 +1711,16 @@ disp('camStartupFun passed')
             end
         end
         if ~isempty(MCUvar_htData)
-            htCell = textscan(MCUvar_htData,'%u%u%u','delimiter',',');
+            htCell = textscan(MCUvar_htData,'%u%u','delimiter',',');
             tempMCU = double(htCell{2})/10;
             humidMCU = double(htCell{1})/10;
-            coolerMCU = round((double(htCell{3})/255)*100);
             set(hPezReport.temp,'String',[num2str(tempMCU) ' deg C']);
             set(hPezReport.humid,'String',[num2str(humidMCU) ' %']);
-            set(hPezReport.cooler,'String',[num2str(coolerMCU) ' % power']);
             MCUvar_htData = [];
         end
         if ~isempty(MCUvar_cooler)
-            htCell = textscan(MCUvar_htData,'%u%u','delimiter',',');
-            coolerMCU = double(htCell{1})/10;
+            htCell = textscan(MCUvar_cooler,'%u');
+            coolerMCU = round((double(htCell{1})/255)*100);
             set(hPezReport.cooler,'String',[num2str(coolerMCU) ' % power']);
             MCUvar_cooler = [];
         end
