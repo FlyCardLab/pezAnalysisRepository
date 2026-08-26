@@ -957,49 +957,23 @@ char in = Serial1.read();
       if (in == '\r')
       {
         stateTH = 0;
-       // DEBUG (temporary, re-verifying the exact byte layout on hardware): forward the
-       // raw captured line as a hex byte dump, unconditionally, before any parsing below.
-       // A hex dump (rather than raw ASCII) makes whitespace unambiguous -- a space shows
-       // up as a visible "20" token instead of invisible whitespace that's easy to
-       // mis-transcribe by hand. Remove once the byte layout below is re-confirmed.
-        Serial.print("RAWHEX:");
-        for (int dbgI = 0; dbgI < indexTH; dbgI++)
-        {
-          Serial.print(" ");
-          if (buff[dbgI] < 0x10) Serial.print("0");
-          Serial.print(buff[dbgI], HEX);
-        }
-        Serial.print("\r\n");
-       // process the data. Format is normally Hxxx.x Tsxx.x<cr> (2 integer digits for
-       // humidity), but the sensor does NOT zero-pad the humidity value, so below 10%
-       // it drops the tens digit entirely and the line is exactly 1 character shorter
-       // from that point on (e.g. "H9.9 T+23.1" instead of "H 45.5 T+23.1"). Handle both
-       // known layouts explicitly, and validate every byte used is actually a digit
-       // before doing arithmetic on it -- previously a mismatched byte could go negative
-       // and silently wrap around in the uint16_t humidityNow/tempNow, producing garbage
-       // readings (e.g. "6304%") instead of failing safe.
+       // Format is H xx.x T sx.x<cr>, right-justified/space-padded (not zero-padded) --
+       // confirmed via hex-dump capture on hardware. Humidity's tens digit (buff[2]) is
+       // a space when humidity is single-digit; nothing else shifts position. Validate
+       // every byte used is actually a digit before doing arithmetic on it -- previously
+       // a mismatched byte could go negative and silently wrap around in the uint16_t
+       // humidityNow/tempNow, producing garbage readings (e.g. "6304%") instead of
+       // failing safe. Temperature's tens digit (buff[9]) is left digit-only -- it never
+       // drops into single digits on this rig.
         if ((buff[0] == 'H') && (buff[4] == '.') && (buff[7] == 'T') &&
-            isDig(buff[2]) && isDig(buff[3]) && isDig(buff[5]) &&
+            (buff[2] == ' ' || isDig(buff[2])) && isDig(buff[3]) && isDig(buff[5]) &&
             isDig(buff[9]) && isDig(buff[10]) && isDig(buff[12]))
         {
-          // >=10% humidity: 2 integer digits
-          humidityNow = ((buff[2] - 0x30) * 100) + ((buff[3] - 0x30) * 10) + (buff[5] - 0x30);
+          uint8_t humTens = (buff[2] == ' ') ? 0 : (buff[2] - 0x30);
+          humidityNow = (humTens * 100) + ((buff[3] - 0x30) * 10) + (buff[5] - 0x30);
           tempNow = ((buff[9] - 0x30) * 100) + ((buff[10] - 0x30) * 10) + ((buff[12]) - 0x30);
         // check the sign and flip if needed
           if (buff[8] == '-')
-            tempNow = -tempNow;
-        // indicate we have valid data
-          thValid = 1;
-        }
-        else if ((buff[0] == 'H') && (buff[3] == '.') && (buff[6] == 'T') &&
-            isDig(buff[2]) && isDig(buff[4]) &&
-            isDig(buff[8]) && isDig(buff[9]) && isDig(buff[11]))
-        {
-          // <10% humidity: sensor omits the tens digit, whole line shifted 1 char earlier
-          humidityNow = ((buff[2] - 0x30) * 10) + (buff[4] - 0x30);
-          tempNow = ((buff[8] - 0x30) * 100) + ((buff[9] - 0x30) * 10) + ((buff[11]) - 0x30);
-        // check the sign and flip if needed
-          if (buff[7] == '-')
             tempNow = -tempNow;
         // indicate we have valid data
           thValid = 1;
