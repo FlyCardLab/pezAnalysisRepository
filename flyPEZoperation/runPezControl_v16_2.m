@@ -1,4 +1,4 @@
-function runPezControl_v16_1
+function runPezControl_v16_2
 %UNTITLED Summary of this function goes here
 
 %   Detailed explanation goes here
@@ -955,6 +955,7 @@ xROI = 0;
 yROI = 0;
 stagePos = 0;
 roiSwell = 15;
+roiStep = 12;% manual ROI resize step, one fly-detect grid spacing
 set(hAxesA,'nextplot','add','YDir','reverse')
 hPlotROI = plot(0,0,'Marker','.','Color',[0 0 0.8],...
     'Parent',hAxesA,'LineStyle','none');
@@ -1750,6 +1751,36 @@ disp('camStartupFun passed')
             dirData = dirData-pi;
         end
     end
+    function refreshROIderived
+        % Rebuilds everything derived from roiPos: the fly-detect search
+        % grid, the annotation overlays and the drawn ROI outline.  Call
+        % this after ANY change to roiPos - otherwise fly detect keeps
+        % searching the grid built for the previous ROI.
+        lrgDims = [roiPos(4)-roiPos(2),roiPos(3)-roiPos(1)];
+        smlDims = floor(lrgDims*dwnFac);
+        xOpsVec = (tmplLeg+1:6:smlDims(2)-tmplLeg);
+        yOpsVec = (tmplLeg+1:6:smlDims(1)-tmplLeg);
+        xOpsEdges = repmat(xOpsVec,1,numel(yOpsVec));
+        yOpsEdges = repmat(yOpsVec,numel(xOpsVec),1);
+        xOpsEdges = xOpsEdges(:);
+        yOpsEdges = yOpsEdges(:);
+        
+        % overlay data only - visibility stays under the annotate toggle
+        set(hQuivA,'XData',roiPos(1)+lrgDims(2)/2,...
+            'YData',roiPos(2)+lrgDims(1)/2)
+        xPlot = roiPos(1)+xOpsEdges(:)*2;
+        yPlot = roiPos(2)+yOpsEdges(:)*2;
+        set(hPlotPre,'XData',xPlot,'YData',yPlot)
+        
+        xOpsVec = (1:2:lrgDims(2));
+        yOpsVec = (1:2:lrgDims(1));
+        xROI = [xOpsVec,repmat(lrgDims(2),1,numel(yOpsVec))...
+            xOpsVec,ones(1,numel(yOpsVec))]+roiPos(1);
+        yROI = [ones(1,numel(xOpsVec)),yOpsVec,...
+            repmat(lrgDims(1),1,numel(xOpsVec)),yOpsVec]+roiPos(2);
+        set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
+            'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
+    end
     function hDispROICall(~,~)
         if isempty(roiPos)
             messageFun('Set ROI first')
@@ -1882,29 +1913,7 @@ disp('camStartupFun passed')
 %             roiPos = [min(cBotBW)-roiSwell,min(rBotBW)+sideNdx-roiSwell,...
 %                 max(cBotBW)+roiSwell,max(rBotBW)+sideNdx+roiSwell];
             
-            lrgDims = [roiPos(4)-roiPos(2),roiPos(3)-roiPos(1)];
-            smlDims = floor(lrgDims*dwnFac);
-            xOpsVec = (tmplLeg+1:6:smlDims(2)-tmplLeg);
-            yOpsVec = (tmplLeg+1:6:smlDims(1)-tmplLeg);
-            xOpsEdges = repmat(xOpsVec,1,numel(yOpsVec));
-            yOpsEdges = repmat(yOpsVec,numel(xOpsVec),1);
-            xOpsEdges = xOpsEdges(:);
-            yOpsEdges = yOpsEdges(:);
-            
-            set(hQuivA,'XData',roiPos(1)+lrgDims(2)/2,...
-                'YData',roiPos(2)+lrgDims(1)/2,'Visible','off')
-            xPlot = roiPos(1)+xOpsEdges(:)*2;
-            yPlot = roiPos(2)+yOpsEdges(:)*2;
-            set(hPlotPre,'XData',xPlot,'YData',yPlot,'Visible','off')
-            
-            xOpsVec = (1:2:lrgDims(2));
-            yOpsVec = (1:2:lrgDims(1));
-            xROI = [xOpsVec,repmat(lrgDims(2),1,numel(yOpsVec))...
-                xOpsVec,ones(1,numel(yOpsVec))]+roiPos(1);
-            yROI = [ones(1,numel(xOpsVec)),yOpsVec,...
-                repmat(lrgDims(1),1,numel(xOpsVec)),yOpsVec]+roiPos(2);
-            set(hPlotROI,'XData',[xROI(:);NaN;stageX(:)],...
-                'YData',[yROI(:);NaN;stageY(:)],'Visible','on')
+            refreshROIderived
             dispLiveImage
             java.lang.Thread.sleep(2000);
             dispLiveImage
@@ -2482,63 +2491,35 @@ function hManualSetROIdown(~,~)
                 'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
         end
     end
+% The bottom-view fly-detect search grid steps every 6 downsampled pixels,
+% which is roiStep full-resolution pixels.  Resizing by less than that adds
+% no new search point, so the detected area would not actually change.
 function hManualSetROIincrease(~,~)
-	if numel(xROI)==1
-		warning('first set autoROI')
-	else
-		% organize quartiles
-		ROIfourth = length(xROI)/4;
-		ROI1q = (1:ROIfourth);
-		ROI2q = ((ROIfourth+1):(2*ROIfourth));
-		ROI3q = ((2*ROIfourth+1):(3*ROIfourth));
-		ROI4q = ((3*ROIfourth+1):(4*ROIfourth));
-		% change X values
-		ROI1qx = [xROI(ROI1q),(xROI(ROIfourth)+2)];
-		ROI2qx = [(xROI(ROI2q)+2),(xROI(2*ROIfourth)+2)];
-		ROI3qx = [xROI(ROI3q),(xROI(3*ROIfourth)+2)];
-		ROI4qx = [xROI(ROI4q),(xROI(4*ROIfourth))];
-		% change Y values
-		ROI1qy = [(yROI(ROI1q)),(yROI(ROIfourth))];
-		ROI2qy = [yROI(ROI2q),(yROI(2*ROIfourth)+2)];
-		ROI3qy = [(yROI(ROI3q)+2),(yROI(3*ROIfourth)+2)];
-		ROI4qy = [yROI(ROI4q),(yROI(4*ROIfourth)+2)];
-		% save xROI and yROI
-		xROI = [ROI1qx,ROI2qx,ROI3qx,ROI4qx];
-		yROI = [ROI1qy,ROI2qy,ROI3qy,ROI4qy];
-		% increase ROI
-		roiPos(3) = roiPos(3) + 2;
-		roiPos(4) = roiPos(4) + 2;
-		% update plot
-    	set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
-            'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')	
-	end
+    if numel(xROI)==1
+        warning('first set autoROI')
+        return
+    end
+    if roiPos(3)+roiStep > double(nCam.nWidth) || roiPos(4)+roiStep > double(nCam.nHeight)
+        messageFun('ROI already at frame edge')
+        return
+    end
+    roiPos(3) = roiPos(3)+roiStep;
+    roiPos(4) = roiPos(4)+roiStep;
+    refreshROIderived
 end
 function hManualSetROIdecrease(~,~)
-	if numel(xROI)==1
-		warning('first set autoROI')
-	else
-		% organize quartiles
-		ROIfourth = length(xROI)/4;
-		% change X values
-		ROI1qx = xROI(1:(ROIfourth-1));
-		ROI2qx = xROI((ROIfourth+1):(2*ROIfourth-1))-2;
-		ROI3qx = xROI((2*ROIfourth+1):(3*ROIfourth-1));
-		ROI4qx = xROI((3*ROIfourth+1):(4*ROIfourth-1));
-		% change Y values
-		ROI1qy = yROI(1:(ROIfourth-1));
-		ROI2qy = yROI((ROIfourth+1):(2*ROIfourth-1));
-		ROI3qy = yROI((2*ROIfourth+1):(3*ROIfourth-1))-2;
-		ROI4qy = yROI((3*ROIfourth+1):(4*ROIfourth-1));
-		% save xROI and yROI
-		xROI = [ROI1qx,ROI2qx,ROI3qx,ROI4qx];
-		yROI = [ROI1qy,ROI2qy,ROI3qy,ROI4qy];
-		% increase ROI
-		roiPos(3) = roiPos(3) - 2;
-		roiPos(4) = roiPos(4) - 2;
-		% update plot
-    	set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
-        	'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')	
-	end
+    if numel(xROI)==1
+        warning('first set autoROI')
+        return
+    end
+    newDims = [roiPos(4)-roiStep-roiPos(2),roiPos(3)-roiStep-roiPos(1)];
+    if floor(min(newDims)*dwnFac) < 2*tmplLeg+1
+        messageFun('ROI already at minimum size')
+        return
+    end
+    roiPos(3) = roiPos(3)-roiStep;
+    roiPos(4) = roiPos(4)-roiStep;
+    refreshROIderived
 end
 
 
