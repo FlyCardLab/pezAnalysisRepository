@@ -860,9 +860,11 @@ uint16_t peltierPWM = 0;
    
   if (status == 1 || status == 2)
   {
-    if (feedback != oldfeedback && feedback != 0)
+    if (feedback != oldfeedback)
     {
-      //xprintf(PSTR("$FB,%u\r\n"), feedback);
+      Serial.print("$FB,");
+      Serial.print(feedback);
+      Serial.print("\r\n");
       oldfeedback = feedback;
     }
     #ifdef DEBUG
@@ -936,6 +938,8 @@ int8_t getTH(uint16_t *H, uint16_t *T)
 
 //void serialEvent1()
 
+boolean isDig(uint8_t c) { return (c >= '0') && (c <= '9'); }
+
 void processTH(void)
 {
 //uint8_t i;
@@ -953,11 +957,20 @@ char in = Serial1.read();
       if (in == '\r')
       {
         stateTH = 0;
-       // process the data (format: Hxxx.x Tsxx.x<cr>)
-       // first some sanity checking (pretty lame though, only checks to see if the H & T is in the buffer at the right place)
-        if ((buff[0] == 'H') && (buff[7] == 'T'))
+       // Format is H xx.x T sx.x<cr>, right-justified/space-padded (not zero-padded) --
+       // confirmed via hex-dump capture on hardware. Humidity's tens digit (buff[2]) is
+       // a space when humidity is single-digit; nothing else shifts position. Validate
+       // every byte used is actually a digit before doing arithmetic on it -- previously
+       // a mismatched byte could go negative and silently wrap around in the uint16_t
+       // humidityNow/tempNow, producing garbage readings (e.g. "6304%") instead of
+       // failing safe. Temperature's tens digit (buff[9]) is left digit-only -- it never
+       // drops into single digits on this rig.
+        if ((buff[0] == 'H') && (buff[4] == '.') && (buff[7] == 'T') &&
+            (buff[2] == ' ' || isDig(buff[2])) && isDig(buff[3]) && isDig(buff[5]) &&
+            isDig(buff[9]) && isDig(buff[10]) && isDig(buff[12]))
         {
-          humidityNow = ((buff[2] - 0x30) * 100) + ((buff[3] - 0x30) * 10) + (buff[5] - 0x30);
+          uint8_t humTens = (buff[2] == ' ') ? 0 : (buff[2] - 0x30);
+          humidityNow = (humTens * 100) + ((buff[3] - 0x30) * 10) + (buff[5] - 0x30);
           tempNow = ((buff[9] - 0x30) * 100) + ((buff[10] - 0x30) * 10) + ((buff[12]) - 0x30);
         // check the sign and flip if needed
           if (buff[8] == '-')
@@ -965,6 +978,7 @@ char in = Serial1.read();
         // indicate we have valid data
           thValid = 1;
         }
+        // else: malformed line -- keep the previous (stale) humidityNow/tempNow/thValid
     }
     else
     {
