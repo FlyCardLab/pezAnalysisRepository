@@ -1715,14 +1715,7 @@ disp('camStartupFun passed')
             tempMCU = double(htCell{2})/10;
             humidMCU = double(htCell{1})/10;
             set(hPezReport.temp,'String',[num2str(tempMCU) ' deg C']);
-            humidStr = [num2str(humidMCU) ' %'];
-            if humidMCU <= 10.5
-                % Precon HS-2000D appears to have a measurement floor around
-                % 10% RH -- flag it so a pinned low reading isn't mistaken
-                % for a bug.
-                humidStr = [humidStr ' (sensor floor?)'];
-            end
-            set(hPezReport.humid,'String',humidStr);
+            set(hPezReport.humid,'String',[num2str(humidMCU) ' %']);
             MCUvar_htData = [];
         end
         if ~isempty(MCUvar_cooler)
