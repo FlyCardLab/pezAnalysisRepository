@@ -1,4 +1,4 @@
-function runPezControl_v16
+function runPezControl_v16_1
 %UNTITLED Summary of this function goes here
 
 %   Detailed explanation goes here
