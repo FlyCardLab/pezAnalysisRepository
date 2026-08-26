@@ -957,6 +957,19 @@ char in = Serial1.read();
       if (in == '\r')
       {
         stateTH = 0;
+       // DEBUG (temporary, re-verifying the exact byte layout on hardware): forward the
+       // raw captured line as a hex byte dump, unconditionally, before any parsing below.
+       // A hex dump (rather than raw ASCII) makes whitespace unambiguous -- a space shows
+       // up as a visible "20" token instead of invisible whitespace that's easy to
+       // mis-transcribe by hand. Remove once the byte layout below is re-confirmed.
+        Serial.print("RAWHEX:");
+        for (int dbgI = 0; dbgI < indexTH; dbgI++)
+        {
+          Serial.print(" ");
+          if (buff[dbgI] < 0x10) Serial.print("0");
+          Serial.print(buff[dbgI], HEX);
+        }
+        Serial.print("\r\n");
        // process the data. Format is normally Hxxx.x Tsxx.x<cr> (2 integer digits for
        // humidity), but the sensor does NOT zero-pad the humidity value, so below 10%
        // it drops the tens digit entirely and the line is exactly 1 character shorter
