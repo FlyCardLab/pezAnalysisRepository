@@ -938,6 +938,8 @@ int8_t getTH(uint16_t *H, uint16_t *T)
 
 //void serialEvent1()
 
+boolean isDig(uint8_t c) { return (c >= '0') && (c <= '9'); }
+
 void processTH(void)
 {
 //uint8_t i;
@@ -964,8 +966,8 @@ char in = Serial1.read();
        // and silently wrap around in the uint16_t humidityNow/tempNow, producing garbage
        // readings (e.g. "6304%") instead of failing safe.
         if ((buff[0] == 'H') && (buff[4] == '.') && (buff[7] == 'T') &&
-            (buff[2] >= '0') && (buff[2] <= '9') && (buff[3] >= '0') && (buff[3] <= '9') && (buff[5] >= '0') && (buff[5] <= '9') &&
-            (buff[9] >= '0') && (buff[9] <= '9') && (buff[10] >= '0') && (buff[10] <= '9') && (buff[12] >= '0') && (buff[12] <= '9'))
+            isDig(buff[2]) && isDig(buff[3]) && isDig(buff[5]) &&
+            isDig(buff[9]) && isDig(buff[10]) && isDig(buff[12]))
         {
           // >=10% humidity: 2 integer digits
           humidityNow = ((buff[2] - 0x30) * 100) + ((buff[3] - 0x30) * 10) + (buff[5] - 0x30);
@@ -977,8 +979,8 @@ char in = Serial1.read();
           thValid = 1;
         }
         else if ((buff[0] == 'H') && (buff[3] == '.') && (buff[6] == 'T') &&
-            (buff[2] >= '0') && (buff[2] <= '9') && (buff[4] >= '0') && (buff[4] <= '9') &&
-            (buff[8] >= '0') && (buff[8] <= '9') && (buff[9] >= '0') && (buff[9] <= '9') && (buff[11] >= '0') && (buff[11] <= '9'))
+            isDig(buff[2]) && isDig(buff[4]) &&
+            isDig(buff[8]) && isDig(buff[9]) && isDig(buff[11]))
         {
           // <10% humidity: sensor omits the tens digit, whole line shifted 1 char earlier
           humidityNow = ((buff[2] - 0x30) * 10) + (buff[4] - 0x30);
