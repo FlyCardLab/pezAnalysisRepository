@@ -2450,46 +2450,34 @@ disp('camStartupFun passed')
     function hManualSetROIright(~,~)
         if numel(xROI)==1
             warning('first set autoROI')
-        else
-            xROI(:) = xROI+1;
-            roiPos(1) = roiPos(1)+1;
-            roiPos(3) = roiPos(3)+1;
-            set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
-                'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
+            return
         end
+        roiPos([1 3]) = roiPos([1 3])+1;
+        refreshROIderived
     end
-function hManualSetROIleft(~,~)
+    function hManualSetROIleft(~,~)
         if numel(xROI)==1
             warning('first set autoROI')
-        else
-            xROI(:) = xROI-1;
-            roiPos(1) = roiPos(1)-1;
-            roiPos(3) = roiPos(3)-1;
-            set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
-                'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
+            return
         end
-end
-function hManualSetROIup(~,~)
+        roiPos([1 3]) = roiPos([1 3])-1;
+        refreshROIderived
+    end
+    function hManualSetROIup(~,~)
         if numel(xROI)==1
             warning('first set autoROI')
-        else
-            yROI(:) = yROI-1;
-            roiPos(2) = roiPos(2)-1;
-            roiPos(4) = roiPos(4)-1;
-            set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
-                'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
+            return
         end
-end
-function hManualSetROIdown(~,~)
+        roiPos([2 4]) = roiPos([2 4])-1;
+        refreshROIderived
+    end
+    function hManualSetROIdown(~,~)
         if numel(xROI)==1
             warning('first set autoROI')
-        else
-            yROI(:) = yROI+1;
-            roiPos(2) = roiPos(2)+1;
-            roiPos(4) = roiPos(4)+1;
-            set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
-                'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
+            return
         end
+        roiPos([2 4]) = roiPos([2 4])+1;
+        refreshROIderived
     end
 % The bottom-view fly-detect search grid steps every 6 downsampled pixels,
 % which is roiStep full-resolution pixels.  Resizing by less than that adds
