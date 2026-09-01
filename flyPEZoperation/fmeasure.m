@@ -8,7 +8,7 @@
 %   Image,  is a grayscale image and FM is the computed
 %           focus value.
 %   Method, is the focus measure algorithm as a string.
-%           see 'operators.txt' for a list of focus 
+%           see 'fmeasure_operators.txt' for a list of focus
 %           measure methods. 
 %   ROI,    Image ROI as a rectangle [xo yo width heigth].
 %           if an empty argument is passed, the whole
