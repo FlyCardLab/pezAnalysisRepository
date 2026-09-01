@@ -1,0 +1,14 @@
+# MATLAB editor autosave files
+*.asv
+*.m~
+
+# JVM crash dumps (MATLAB/Java)
+hs_err_pid*.log
+
+# Windows Explorer folder settings
+Desktop.ini
+desktop.ini
+Thumbs.db
+
+# macOS
+.DS_Store
