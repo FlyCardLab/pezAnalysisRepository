@@ -26,9 +26,8 @@ compDataPath = fullfile(variablesDir,'computer_info.xlsx');
 compData = dataset('XLSFile',compDataPath);
 compRef = find(strcmpi(compData.control_computer_name,comp_name));%this computer
 if isempty(compRef)
-    compRef = 1;
     disp('computer not valid')
-    %     return
+    return
 end
 %% computer-specific information
 % Per-rig calibration values live in computer_info.xlsx on the network share
