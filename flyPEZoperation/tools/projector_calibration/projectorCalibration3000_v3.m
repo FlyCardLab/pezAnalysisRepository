@@ -30,6 +30,76 @@ if isempty(compRef)
     disp('computer not valid')
     %     return
 end
+%% computer-specific information
+% Per-rig calibration values live in computer_info.xlsx on the network share
+% (pez3000_variables), NOT in this file.  Values edited here are undone by the
+% next git pull.  computer_info_README.txt beside the spreadsheet describes what
+% each value means and how it is measured.
+%
+% CALIBRATE OP 1
+%   atMirPlane2projector (inches) - distance from the top of the mirror plane to
+%   the lens.
+% CALIBRATE OP 2
+%   sphereCircumference (millimeters) - using tailor's measuring tape,
+%   empirically determine the circumference of the dome.
+%   zoomTheta (degrees) - adjust until the scale of the top projection aligns
+%   with the 10mm marks on the measuring tape.  Bigger numbers reduce the
+%   spacing between the lines.
+% CALIBRATE OP 3
+%   sphDropDiff - adjust until the bottom projection dashed lines align with the
+%   two top projection dashed lines.  Bigger numbers make the bottom lines
+%   lower.  When the dashed lines align, the solid ones should all line up with
+%   the 10-mm marks.  If not, slightly adjust the zoom and try again.
+%   whRatioAdjust - adjust until the sides align.  Bigger numbers make the
+%   mirror reflection go down on the sides relative to the top reflection.
+%   topThreshFactor - position the transition from top-projection to
+%   mirror-projection to the edge of the mirror.
+%   stimRefROI_x/stimRefROI_y - reference flicker window, x1 y1 from top,left of
+%   screen.
+% CALIBRATE OP 4
+%   hypSkewTB/hypSkewLR - fine-tuning, needed to skew diagonally.  Positive
+%   numbers for 'TB' rock the mirror-reflected ring towards the camera.
+%   Positive numbers for 'LR' rock it to the right from the camera's
+%   perspective.
+%   hypTwistA/B/C/D - right/left/bottom/top side twist.  Positive numbers twist
+%   top or right.
+%   photoscan_rig - which rig's photodiode scan to build gainMatrix from.
+calibVarNames = {'atMirPlane2projector','sphereCircumference','zoomTheta',...
+    'sphDropDiff','whRatioAdjust','topThreshFactor','stimRefROI_x',...
+    'stimRefROI_y','hypSkewTB','hypSkewLR','hypTwistA','hypTwistB',...
+    'hypTwistC','hypTwistD','photoscan_rig'};
+missingVars = calibVarNames(~ismember(calibVarNames,get(compData,'VarNames')));
+if ~isempty(missingVars)
+    disp(['computer_info.xlsx is missing column(s): ' strjoin(missingVars,', ')])
+    return
+end
+calibVals = {compData.atMirPlane2projector(compRef),...
+    compData.sphereCircumference(compRef),...
+    compData.zoomTheta(compRef),...
+    compData.sphDropDiff(compRef),...
+    compData.whRatioAdjust(compRef),...
+    compData.topThreshFactor(compRef),...
+    compData.stimRefROI_x(compRef),...
+    compData.stimRefROI_y(compRef),...
+    compData.hypSkewTB(compRef),...
+    compData.hypSkewLR(compRef),...
+    compData.hypTwistA(compRef),...
+    compData.hypTwistB(compRef),...
+    compData.hypTwistC(compRef),...
+    compData.hypTwistD(compRef),...
+    compData.photoscan_rig(compRef)};
+badVars = ~cellfun(@(x) isnumeric(x) && isscalar(x) && ~isnan(x),calibVals);
+if any(badVars)
+    disp(['invalid calibration value(s) in computer_info.xlsx for ' comp_name ...
+        ': ' strjoin(calibVarNames(badVars),', ')])
+    return
+end
+[atMirPlane2projector,sphereCircumference,zoomTheta,sphDropDiff,...
+    whRatioAdjust,topThreshFactor,stimRefROI_x,stimRefROI_y,...
+    hypSkewTB,hypSkewLR,hypTwistA,hypTwistB,hypTwistC,hypTwistD,...
+    photoscanRig] = deal(calibVals{:});
+stimRefROI = [stimRefROI_x stimRefROI_y];
+
 hostIP = compData.stimulus_computer_IP{compRef};
 portNum = 21566;
 
@@ -61,166 +131,6 @@ width = 1024;
 hW = round(width/2);
 hH = round(height/2);
 
-%% computer-specific information
-switch pezName
-    case 'pez3001' %stimulus computer no. 1
-        % CALIBRATE OP 1
-        % Measure the distance from the top of the mirror plane to the lens
-        atMirPlane2projector = 33.25;%in inches
-        % CALIBRATE OP 2
-        % Using tailor's measuring tape, empirically determine the
-        % circimference of the dome
-        sphereCircumference = 475;%in millimeters
-        % Adjust the following until the scale of the top projection aligns
-        % with the 10mm marks on the measuring tape. Bigger numbers reduce
-        % the spacing between the lines.
-        zoomTheta = 19.95;%in degrees
-        % Adjust the following until the bottom projection dashed lines
-        % align with the two top projection dashed lines.  Bigger numbers
-        % make the bottom lines lower.  When the dashed lines align, the
-        % solid ones should all line up with the 10-mm marks.  If not,
-        % slightly adjust the zoom and try again.
-        % CALIBRATE OP 3
-        sphDropDiff = 0.225;
-        % Adjust the following until the sides align.  Bigger numbers make
-        % the mirror reflection go down on the sides relative to the top
-        % reflection.
-        whRatioAdjust = 0.990;
-        % Position the transition from top-projection to mirror-projection
-        % to the edge of the mirror
-        topThreshFactor = 1.035;
-        %reference flicker window
-        stimRefROI = [95 435];%x1 y1 from top,left of screen
-
-        % CALIBRATE OP 4
-        % The following are for fine-tuning, needed to skew diagonally.
-        % Positive numbers for 'TB' rocks the mirror-reflected ring towards
-        % the camera.  Positive numbers for LR rock the mirror reflected
-        % ring to the right from the perspective of the camera.
-        hypSkewTB = -0.000;
-        hypSkewLR = -0.006;
-
-        %positive numbers twist top or right
-        hypTwistA = 0.07;%right side twist
-        hypTwistB = 0.0;%left side twist
-        hypTwistC = 0.0;%bottom twist
-        hypTwistD = 0.0;%top twist
-
-    case 'pez3002' %stimulus computer no. 2
-        %
-        %         %positive numbers twist top or right
-        %         hypTwistA = 0.11;%right side twost
-        %         hypTwistB = -0.04;%left side twist
-        %         hypTwistC = 0.0;%bottom twost
-        %         hypTwistD = 0.0;%top twist
-
-        atMirPlane2projector = 33.25;
-        sphereCircumference = 473.5;
-        zoomTheta = 19.85;
-        sphDropDiff = 0.22; %0.165;
-        topThreshFactor = 1.035;
-        whRatioAdjust = 0.99;
-        stimRefROI = [92 430];
-        hypSkewTB = -0.00;
-        hypSkewLR = -0.002;
-
-        %positive numbers twist top or right
-        hypTwistA = 0.05;%right side twost
-        hypTwistB = 0.0;%left side twist
-        hypTwistC = 0.05;%bottom twost
-        hypTwistD = 0.0;%top twist
-
-    case 'pez3003' %stimulus computer no. 3
-        atMirPlane2projector = 34.4;
-        sphereCircumference = 475;
-        zoomTheta = 19.55;
-        %        zoomTheta = 18.10;
-        %        sphDropDiff = 0.16;
-        sphDropDiff = 0.17;
-        topThreshFactor = 1.035;
-        %         whRatioAdjust = 0.992;
-        whRatioAdjust = 0.9895;
-        stimRefROI = [85 439];
-        %        hypSkewTB = 0.003;
-        %        hypSkewLR = 0.006;
-        hypSkewTB = 0.005;
-        hypSkewLR = -0.006;
-
-        %positive numbers twist top or right
-        hypTwistA = 0.0;%right side twost
-        hypTwistB = 0.0;%left side twist
-        hypTwistC = 0.0;%bottom twost
-        hypTwistD = 0.0;%top twist
-
-    case 'pez3004' %stimulus computer no. 4
-        atMirPlane2projector = 34;
-        sphereCircumference = 475;
-        zoomTheta = 19.75;
-        sphDropDiff = 0.235;
-        topThreshFactor = 1.035;
-        whRatioAdjust = 0.99;
-        stimRefROI = [95 435];
-        %         %hypSkewTB = -0.005;
-        %         hypSkewTB = -0.035;
-        %         hypSkewLR = -0.033;
-        hypSkewTB = -0.008;
-        hypSkewLR = -0.0;
-
-        %positive numbers twist top or right
-        hypTwistA = 0.00;%right side twost
-        hypTwistB = 0.00;%left side twist
-        hypTwistC = 0.005;%bottom twost
-        hypTwistD = 0.00;%top twist
-
-    case 'pez3005' %stimulus computer no. 1
-        % CALIBRATE OP 1
-        % Measure the distance from the top of the mirror plane to the lens
-        atMirPlane2projector = 33.75;%in inches
-        % CALIBRATE OP 2
-        % Using tailor's measuring tape, empirically determine the
-        % circimference of the dome
-        sphereCircumference = 475;%in millimeters
-        % Adjust the following until the scale of the top projection aligns
-        % with the 10mm marks on the measuring tape. Bigger numbers reduce
-        % the spacing between the lines.
-        zoomTheta = 19.25;%in degrees
-        % Adjust the following until the bottom projection dashed lines
-        % align with the two top projection dashed lines.  Bigger numbers
-        % make the bottom lines lower.  When the dashed lines align, the
-        % solid ones should all line up with the 10-mm marks.  If not,
-        % slightly adjust the zoom and try again.
-        % CALIBRATE OP 3
-        sphDropDiff = 0.4;
-        %sphDropDiff = 0;
-        % Adjust the following until the sides align.  Bigger numbers make
-        % the mirror reflection go down on the sides relative to the top
-        % reflection.
-        whRatioAdjust = .99;
-        % Position the transition from top-projection to mirror-projection
-        % to the edge of the mirror
-        topThreshFactor = 1.02;
-        %reference flicker window
-        stimRefROI = [95 405];%x1 y1 from top,left of screen
-
-        % CALIBRATE OP 4
-        % The following are for fine-tuning, needed to skew diagonally.
-        % Positive numbers for 'TB' rocks the mirror-reflected ring towards
-        % the camera.  Positive numbers for LR rock the mirror reflected
-        % ring to the right from the perspective of the camera.
-        hypSkewTB = -0.002;
-        hypSkewLR = -0.005;
-
-        %positive numbers twist top or right
-        hypTwistA = 0.00;%right side twist
-        hypTwistB = 0.0;%left side twist
-        hypTwistC = 0.0;%bottom twist
-        hypTwistD = 0.00;%top twist
-
-
-    otherwise
-        disp('error')
-        return
-end
 stimRefROI = [stimRefROI stimRefROI+35];
 save(paramPath,'atMirPlane2projector','zoomTheta','sphDropDiff',...
     'sphereCircumference','hypSkewTB','hypSkewLR','whRatioAdjust','stimRefROI')
@@ -488,7 +398,7 @@ latsOnlyIm = Vq;
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 useOldStyle = true;
-pezNameScan = 'pez3001';
+pezNameScan = ['pez' num2str(photoscanRig)];
 if ~useOldStyle
     scanStatsName = ['photoScanResults_' pezNameScan,...
         '_whiteLED_10AzimuthalSteps_white_pt007_41.mat'];
