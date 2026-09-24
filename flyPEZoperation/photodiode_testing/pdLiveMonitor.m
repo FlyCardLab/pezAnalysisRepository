@@ -257,9 +257,7 @@ cleanupAll();
             hi = max(probe(:,1));
             pad = max(0.25*(hi-lo),0.01);
             applyRange(narrowestContaining([lo-pad hi+pad]));
-            if useUDP
-                sendUDP(10);
-            end
+            goDark();%guarded: 10 is only valid after a standard init
         else
             applyRange(narrowestContaining(wanted));
         end
