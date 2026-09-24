@@ -17,6 +17,8 @@ function pdLiveMonitor(varargin)
 %   'Range'     explicit [lo hi] in volts, default [-10 10].  Deliberately
 %               wide: see "THE 5 V RAIL" below.  Pass 'auto' to probe and
 %               pick the narrowest fitting range instead.
+%   'InitMode'  'transforming' (default) or 'standard'.  Picks which half
+%               of the measurement this session can do -- see below.
 %   'SensorRail' voltage the sensor saturates at, default 5 (its supply).
 %               Only used to label clipping in the readout, never to alter
 %               the data.
@@ -41,11 +43,32 @@ function pdLiveMonitor(varargin)
 %the optical signal is a 50% duty square wave at 180 Hz, 2.78 ms per state,
 %swinging between levels 255 and 10 (never fully dark).
 %
-%READING THE NUMBERS.  Press White then Dark to latch the DC swing, then
-%Flicker to latch the AC numbers.  Then:
+%READING THE NUMBERS.  In 'transforming' mode press Init then Flicker; the
+%cycle-average plot and fc-from-rise answer the bandwidth question on their
+%own.  In 'standard' mode press Init, White, then Dark to latch the DC
+%swing.  With both halves in hand:
 %   both fc estimates agree and are low (<~500 Hz) -> BANDWIDTH LIMITED
 %   fc fine but dcSwing small vs a working rig      -> LIGHT LEVEL / RESPONSIVITY
 %   single channel fine but the mux test much worse -> ACQUISITION CHAIN
+%
+%YOU CANNOT DO BOTH HALVES IN ONE SESSION.  The listener keeps two pieces
+%of state and each command needs a different one:
+%   command 0 ("transforming") -> stimStruct,     needed by 3/4 = Flicker
+%   command 5 ("standard")     -> stimTrigStruct, needed by 9/10 = White/Dark
+%They are mutually destructive: each opens its own Psychtoolbox window, and
+%opening a window invalidates every texture and proxy handle from the
+%previous one.  Send a 5 after a 0 and stimStruct.warpoperator is left
+%dangling, so Flicker dies with "'transformProxyPtr' argument must be a
+%handle to a proxy object", returns a partial struct, and everything after
+%it fails with "Invalid Window (or Texture) Index".
+%
+%So the buttons this session cannot drive are greyed out, and the sequence
+%is: run one mode, then Reset stim (86) and restart in the other.
+%
+%For the bandwidth question you only need the default 'transforming' mode.
+%Rise time and fc-from-rise come from the flicker's own cycle average and
+%do not need White/Dark at all.  'standard' is only for the DC swing, which
+%feeds acPkPk/dcSwing and fc-from-attenuation.
 %
 %THE 5 V RAIL.  A phototransistor module run off 5 V saturates at its
 %supply, and a full-screen white frame is far brighter than the 35x35 px
@@ -88,6 +111,7 @@ addParameter(p,'Rate',50000);
 addParameter(p,'Channels',{'ai0'});
 addParameter(p,'Range',[-10 10]);
 addParameter(p,'SensorRail',5);
+addParameter(p,'InitMode','transforming');
 addParameter(p,'FlickerHz',180);
 addParameter(p,'Window',0.5);
 addParameter(p,'CamRate',6000);
@@ -130,6 +154,7 @@ capFilled = 0;
 capTarget = 0;
 capturing = false;
 latched = emptyLatched();
+stimInitMode = 'none';
 stopFlag = false;
 hFig = [];
 hTrace = [];
@@ -209,7 +234,8 @@ cleanupAll();
         if ischar(wanted) && strcmpi(wanted,'auto')
             %Probe with the projector at full white.  Auto-ranging on a dark
             %trace picks a range that the white condition then clips.
-            if useUDP
+            if useUDP && strcmp(opt.InitMode,'standard')
+                ensureStimInit('standard');
                 sendUDP(9);
                 pause(0.3)
             end
@@ -342,7 +368,8 @@ cleanupAll();
     end
 
     function buildFigure()
-        hFig = figure('Name',sprintf('pdLiveMonitor - %s (%s)',cfg.pezName,cfg.devID),...
+        hFig = figure('Name',sprintf('pdLiveMonitor - %s (%s) - %s init',...
+            cfg.pezName,cfg.devID,opt.InitMode),...
             'NumberTitle','off','Position',[80 80 1150 760],'Color',[1 1 1],...
             'CloseRequestFcn',@(~,~) requestStop());
 
@@ -368,14 +395,23 @@ cleanupAll();
             'Position',[0.44 0.07 0.52 0.44],'HorizontalAlignment','left',...
             'BackgroundColor',[1 1 1],'FontName','Courier New','FontSize',9);
 
-        btnW = 0.105;
+        btnW = 0.092;
         btnY = 0.955;
-        mkButton(0.06,btnY,btnW,'Init (5)',@(~,~) guardedUDP(@() doInit()),'udp');
-        mkButton(0.175,btnY,btnW,'Dark (10)',@(~,~) guardedUDP(@() doDC(10,'dark')),'udp');
-        mkButton(0.29,btnY,btnW,'White (9)',@(~,~) guardedUDP(@() doDC(9,'white')),'udp');
-        mkButton(0.405,btnY,btnW,'Flicker',@(~,~) guardedUDP(@() doFlicker()),'udp');
-        mkButton(0.52,btnY,btnW,'Snapshot',@(~,~) doSnapshot(),'local');
-        mkButton(0.635,btnY,btnW,'Reset numbers',@(~,~) resetLatched(),'local');
+        mkButton(0.06,btnY,btnW,'Init',@(~,~) guardedUDP(@() doInit()),'udp');
+        mkButton(0.160,btnY,btnW,'Dark (10)',@(~,~) guardedUDP(@() doDC(10,'dark')),'standard');
+        mkButton(0.260,btnY,btnW,'White (9)',@(~,~) guardedUDP(@() doDC(9,'white')),'standard');
+        mkButton(0.360,btnY,btnW,'Flicker',@(~,~) guardedUDP(@() doFlicker()),'transforming');
+        mkButton(0.460,btnY,btnW,'Reset stim',@(~,~) guardedUDP(@() doReset()),'udp');
+        mkButton(0.560,btnY,btnW,'Snapshot',@(~,~) doSnapshot(),'local');
+        mkButton(0.660,btnY,btnW,'Clear nums',@(~,~) resetLatched(),'local');
+
+        %Grey out whatever this session's init mode cannot drive, rather than
+        %letting a press corrupt the stimulus computer's window state.
+        if strcmp(opt.InitMode,'transforming')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+        else
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
+        end
 
         hStatus = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
             'Position',[0.755 btnY-0.004 0.20 0.030],'HorizontalAlignment','right',...
@@ -383,6 +419,8 @@ cleanupAll();
 
         if ~useUDP
             set(findobj(hFig,'Tag','udp'),'Enable','off')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
         end
     end
 
@@ -440,26 +478,99 @@ cleanupAll();
             return
         end
         set(findobj(hFig,'Style','pushbutton'),'Enable',state)
+        if strcmp(state,'off')
+            return
+        end
+        %Re-enabling must not resurrect buttons this session cannot use.
+        if strcmp(opt.InitMode,'transforming')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+        else
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
+        end
         if ~useUDP
             set(findobj(hFig,'Tag','udp'),'Enable','off')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
         end
+    end
+
+    function ensureStimInit(mode)
+        %ONE init mode per session, chosen by 'InitMode'.  Never switch.
+        %
+        %The listener holds two separate pieces of state:
+        %   command 0 -> stimStruct     (warpmap, warpoperator, stimRefROI)
+        %                needed by 3/4, the file-based stimuli
+        %   command 5 -> stimTrigStruct (gainMatrix, window)
+        %                needed by 9/10, the full-field frames
+        %
+        %They are not merely different, they destroy each other.  Each opens
+        %its own Psychtoolbox window, and opening a window invalidates every
+        %texture and proxy handle from the previous one.  So a 5 after a 0
+        %leaves stimStruct.warpoperator dangling, and command 3 then dies with
+        %"'transformProxyPtr' argument must be a handle to a proxy object",
+        %returns a partial struct, and everything after it fails too.
+        %
+        %Hence: pick a mode, do that half of the measurement, and restart with
+        %a reset in between if you need the other half.
+        if ~strcmp(mode,opt.InitMode)
+            error('pdLiveMonitor:wrongInitMode',...
+                ['This action needs the "%s" init but the session was started '...
+                'in "%s".\n\nThey cannot coexist: each opens its own PTB '...
+                'window and invalidates the other''s texture handles.\n\n'...
+                'Close this window, press Reset on the stimulus computer (or '...
+                'send command 86), then run:\n'...
+                '    pdLiveMonitor(''InitMode'',''%s'')'],...
+                mode,opt.InitMode,mode)
+        end
+        if strcmp(stimInitMode,mode)
+            return
+        end
+        switch mode
+            case 'standard'
+                code = 5;%full-field frames: 9, 10
+            case 'transforming'
+                code = 0;%file-based stimuli: 3 then 4
+            otherwise
+                error('pdLiveMonitor:badInitMode',...
+                    'InitMode must be ''transforming'' or ''standard''.')
+        end
+        status(sprintf('initialising stimulus computer (%d)...',code))
+        stimInitMode = 'none';
+        sendUDP(code);
+        reply = recvUDP(25000);
+        if isempty(reply)
+            error('pdLiveMonitor:initNoReply',...
+                ['No reply to command %d after 25 s.  Is '...
+                'udpInitializationListener_v2 running on %s?'],code,cfg.hostIP)
+        end
+        if strcmpi(reply,'error')
+            error('pdLiveMonitor:initFailed',...
+                ['Stimulus computer could not complete command %d.  It only '...
+                'ever replies a bare "error"; THE REAL EXCEPTION IS PRINTED '...
+                'ON ITS OWN COMMAND WINDOW -- look there.'],code)
+        end
+        stimInitMode = mode;
+    end
+
+    function doReset()
+        %Command 86 is sca + PsychStartup on the stimulus computer.  This is
+        %the way out of a mangled window/texture state, and the log fills with
+        %"Invalid Window (or Texture) Index" when you are in one.
+        status('resetting stimulus computer...')
+        sendUDP(86);
+        pause(3)
+        stimInitMode = 'none';
+        status('stimulus computer reset -- press Init')
     end
 
     function doInit()
-        status('init...')
-        sendUDP(5);
-        reply = recvUDP(15000);
-        if isempty(reply)
-            error('pdLiveMonitor:noAck',...
-                ['No acknowledgement from the stimulus computer after 15 s. '...
-                'Either udpInitializationListener_v2 is not running there, or '...
-                '(less likely) the reply was dropped between polling windows '...
-                '-- press Init again to distinguish the two.'])
-        end
-        status(['init: ' reply])
+        stimInitMode = 'none';%force a fresh init, so this doubles as a comms check
+        ensureStimInit(opt.InitMode);
+        status(sprintf('stimulus computer ready (%s init)',opt.InitMode))
     end
 
     function doDC(code,which)
+        ensureStimInit('standard');%9 and 10 need stimTrigStruct.gainMatrix
         status([which '...'])
         sendUDP(code);
         pause(0.4)%let the projector settle before measuring
@@ -492,6 +603,7 @@ cleanupAll();
     end
 
     function doFlicker()
+        ensureStimInit('transforming');%3 and 4 need stimStruct
         stimFile = resolveStimFile();
         status('loading stimulus...')
         sendUDP([3 double(stimFile)]);
@@ -506,11 +618,12 @@ cleanupAll();
             else
                 error('pdLiveMonitor:badDuration',...
                     ['Stimulus computer returned "%s" instead of a duration '...
-                    'for %s.\n\nIt replies "error" when it cannot build the '...
-                    'stimulus -- usually because the file is too long or too '...
-                    'large to hold in memory, or was generated for a '...
-                    'different rig (check pez5 = 0). Try a short one: '...
-                    'initStimSize = 5, duration = 3000.'],reply,stimFile)
+                    'for %s.\n\nThe listener catches every exception and '...
+                    'replies a bare "error", so THE REAL CAUSE IS PRINTED ON '...
+                    'THE STIMULUS COMPUTER''S COMMAND WINDOW -- look there '...
+                    'first.\n\nCommon causes: the file was built for a '...
+                    'different rig (check pez5 = 0), or it is too large to '...
+                    'hold in memory.'],reply,stimFile)
             end
         end
         latched.stimFile = stimFile;
