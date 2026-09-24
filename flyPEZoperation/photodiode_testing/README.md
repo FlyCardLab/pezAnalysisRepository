@@ -133,8 +133,22 @@ faithful to the rig, not a bug in `pdVerdict`. The readout shows `avgBase`, `avg
 A 50 mV signal there uses ~1/200th of the available resolution. `pdLiveMonitor` sets the
 range explicitly and reports what the board actually granted.
 
-**Auto-ranging probes with the projector at full white**, not dark — ranging on a dark
-trace picks a range that the white condition then clips.
+**The input range is fixed at ±10 V by default, not auto-ranged.** A phototransistor run
+off 5 V saturates at its supply, and a full-screen white frame is far brighter than the
+35×35 px patch, so White pegs it at a dead-flat 5.000 V while the patch flicker is only a
+few hundred mV. With a narrow range the DAQ would clip at its own ceiling, which looks
+identical in the trace to the sensor railing — and those have completely different fixes.
+With headroom, flat-topping at 5.000 V can only be the sensor. Resolution isn't the
+constraint: a 0.5 V flicker on ±10 V is still ~1600 codes on a 16-bit board.
+
+This matters because `dcSwing` comes from White. **If White clipped, `dcSwing` is only a
+lower bound, so `acPkPk/dcSwing` and fc-from-attenuation would both be wrong** — the
+readout detects the clipping, says whether it was the sensor rail or the DAQ ceiling, and
+withholds those two numbers rather than printing a confident wrong answer. Rise time and
+fc-from-rise are unaffected and still valid.
+
+Pass `'Range','auto'` to probe and pick the narrowest fitting range instead, or
+`'SensorRail',N` if the sensor saturates somewhere other than 5 V.
 
 **UDP replies are polled, not blocked on, and can occasionally be dropped.** A long
 blocking `judp('receive')` sits inside Java, and no `DataAvailable` event can be dispatched
