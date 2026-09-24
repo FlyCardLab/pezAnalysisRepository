@@ -345,31 +345,29 @@ cleanupAll();
 
         btnW = 0.105;
         btnY = 0.955;
-        mkButton(0.06,btnY,btnW,'Init (5)',@(~,~) guardedUDP(@() doInit()));
-        mkButton(0.175,btnY,btnW,'Dark (10)',@(~,~) guardedUDP(@() doDC(10,'dark')));
-        mkButton(0.29,btnY,btnW,'White (9)',@(~,~) guardedUDP(@() doDC(9,'white')));
-        mkButton(0.405,btnY,btnW,'Flicker',@(~,~) guardedUDP(@() doFlicker()));
-        mkButton(0.52,btnY,btnW,'Snapshot',@(~,~) doSnapshot());
-        mkButton(0.635,btnY,btnW,'Reset numbers',@(~,~) resetLatched());
+        mkButton(0.06,btnY,btnW,'Init (5)',@(~,~) guardedUDP(@() doInit()),'udp');
+        mkButton(0.175,btnY,btnW,'Dark (10)',@(~,~) guardedUDP(@() doDC(10,'dark')),'udp');
+        mkButton(0.29,btnY,btnW,'White (9)',@(~,~) guardedUDP(@() doDC(9,'white')),'udp');
+        mkButton(0.405,btnY,btnW,'Flicker',@(~,~) guardedUDP(@() doFlicker()),'udp');
+        mkButton(0.52,btnY,btnW,'Snapshot',@(~,~) doSnapshot(),'local');
+        mkButton(0.635,btnY,btnW,'Reset numbers',@(~,~) resetLatched(),'local');
 
         hStatus = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
             'Position',[0.755 btnY-0.004 0.20 0.030],'HorizontalAlignment','right',...
             'BackgroundColor',[1 1 1],'ForegroundColor',[0.3 0.3 0.3],'String','ready');
 
         if ~useUDP
-            kids = findobj(hFig,'Style','pushbutton');
-            for iterK = 1:numel(kids)
-                s = get(kids(iterK),'String');
-                if ~strcmp(s,'Snapshot') && ~strcmp(s,'Reset numbers')
-                    set(kids(iterK),'Enable','off')
-                end
-            end
+            set(findobj(hFig,'Tag','udp'),'Enable','off')
         end
     end
 
-    function mkButton(x,y,w,str,cb)
+    function mkButton(x,y,w,str,cb,tag)
+        %Interruptible off / BusyAction cancel: these handlers busy-wait on
+        %pause() for seconds, and pause() runs the event queue.  Without this
+        %a second button press re-enters a handler that is mid-capture.
         uicontrol('Parent',hFig,'Style','pushbutton','Units','normalized',...
-            'Position',[x y w 0.033],'String',str,'Callback',cb);
+            'Position',[x y w 0.033],'String',str,'Callback',cb,'Tag',tag,...
+            'Interruptible','off','BusyAction','cancel');
     end
 
     function status(str)
@@ -380,15 +378,46 @@ cleanupAll();
     end
 
     function guardedUDP(fcn)
+        %Take the refresh timer out of play for the duration.  These handlers
+        %busy-wait on pause() for seconds at a time, and pause() lets the
+        %event queue run -- so without this the timer re-enters refresh() and
+        %reads latched/capBuf while they are mid-write, which surfaces as a
+        %bare "Error using pause / Error while evaluating uicontrol Callback".
+        timerWasOn = ~isempty(hTimer) && isvalid(hTimer) &&...
+            strcmp(get(hTimer,'Running'),'on');
+        if timerWasOn
+            stop(hTimer)
+        end
+        setButtons('off')
         try
             fcn();
         catch ME
-            status('UDP failed')
-            warndlg(sprintf(['%s\n\nIs udpInitializationListener_v2 running on '...
-                'the stimulus computer (%s)?'],ME.message,cfg.hostIP),...
-                'Stimulus computer did not answer');
+            capturing = false;%never leave ingest writing into a dead capture
+            status('failed -- see command window')
+            %The dialog truncates and drops the identifier, which is usually
+            %the informative part, so print the full report as well.
+            fprintf(2,'\npdLiveMonitor error:\n%s\n',...
+                getReport(ME,'extended','hyperlinks','off'));
+            warndlg(sprintf(['%s\n\n%s\n\nFull detail is in the command '...
+                'window.  If the stimulus computer is at fault, check that '...
+                'udpInitializationListener_v2 is running on %s.'],...
+                ME.identifier,ME.message,cfg.hostIP),'pdLiveMonitor');
+        end
+        setButtons('on')
+        if timerWasOn && ~isempty(hTimer) && isvalid(hTimer)
+            start(hTimer)
         end
         refresh();
+    end
+
+    function setButtons(state)
+        if isempty(hFig) || ~ishandle(hFig)
+            return
+        end
+        set(findobj(hFig,'Style','pushbutton'),'Enable',state)
+        if ~useUDP
+            set(findobj(hFig,'Tag','udp'),'Enable','off')
+        end
     end
 
     function doInit()
@@ -500,8 +529,17 @@ cleanupAll();
             return
         end
         latched.flickerTrace = d(:,1);
-        analyseFlicker(d(:,1));
-        status('flicker latched')
+        %Analyse whatever was captured, even if something downstream fails --
+        %a populated panel from a partial capture beats an empty one.
+        try
+            analyseFlicker(d(:,1));
+            status('flicker latched')
+        catch ME
+            latched.verdictError = ME.message;
+            fprintf(2,'\npdLiveMonitor: flicker analysis failed:\n%s\n',...
+                getReport(ME,'extended','hyperlinks','off'));
+            status('captured, but analysis failed')
+        end
     end
 
     function analyseFlicker(x)
