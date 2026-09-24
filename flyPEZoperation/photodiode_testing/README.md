@@ -142,6 +142,46 @@ about the sensor.**
 
 ---
 
+## Do not drive the stimulus over Remote Desktop
+
+The stimulus computer's **only** display is the projector. So `Screen('Screens')`
+returning a single screen is normal and correct there — `initializeVisualStimulusGeneralUDP_brighter`
+is written to find it and set `screenid = 0`.
+
+**RDP breaks this.** Connecting over Remote Desktop detaches the physical display and
+substitutes a virtual one for the life of the session. While you are remoted in:
+
+- the projector is no longer attached, so PTB cannot draw to it
+- `Screen('WindowSize',0)` returns your RDP client's width, not 1024
+- `screenid` is never assigned and the init dies at
+  `Unrecognized function or variable 'screenid'`
+
+Worse is the near-miss: if the RDP display happens to be 1024 or 1280 wide, `screenid = 0`
+is assigned, init reports success, the stimulus presents — **into your remote session** —
+and the photodiode sees nothing. Everything looks healthy and no light reaches the dome.
+
+You do not need to touch the stimulus computer while measuring; `pdLiveMonitor` drives it
+over UDP from the control PC. So put the session back on the console first. From an
+elevated command prompt there:
+
+```
+query session
+tscon <your session id> /dest:console
+```
+
+That moves the session to the projector and drops your RDP connection, which is expected.
+The listener keeps running and you drive everything from the control PC.
+
+Better still, use VNC or TeamViewer rather than RDP on this machine — they mirror the
+console session instead of replacing the display, so PTB keeps seeing the projector.
+
+Quick check from the control PC before a run:
+
+```matlab
+judp('send',21566,hostIP,int8(5))
+char(judp('receive',21566,50,15000)')   % 'success' = usable display, 'error' = still RDP
+```
+
 ## Gotchas that cost real time
 
 **The capture must start before the stimulus.** `pdVerdict`'s v13 baseline is
