@@ -557,9 +557,31 @@ cleanupAll();
             error('pdLiveMonitor:initFailed',...
                 ['Stimulus computer could not complete command %d.  It only '...
                 'ever replies a bare "error"; THE REAL EXCEPTION IS PRINTED '...
-                'ON ITS OWN COMMAND WINDOW -- look there.'],code)
+                'ON ITS OWN COMMAND WINDOW -- look there.\n\nIf it says '...
+                '"Unrecognized function or variable ''screenid''", the '...
+                'projector is not being seen as a second display: '...
+                'Screen(''Screens'') is returning one screen, so '...
+                'initializeVisualStimulusGeneralUDP_brighter never finds a '...
+                '1024- or 1280-wide one to draw on.  That is a display '...
+                'problem on the stimulus computer, not something this tool '...
+                'can fix -- check the projector is powered and that Windows '...
+                'is extending rather than duplicating.'],code)
         end
         stimInitMode = mode;
+    end
+
+    function goDark()
+        %Command 10 needs stimTrigStruct.gainMatrix, which only a standard
+        %init creates.  Sending it under a transforming init throws "Dot
+        %indexing is not supported" on the stimulus computer.
+        %
+        %Not sending it is fine: the sensor watches the 35x35 px reference
+        %patch, not the dome, and that patch is already black at idle
+        %(stimRefImageB in initializeFramesFromFileUDP).  So the lead-in is
+        %dark where it matters either way.
+        if strcmp(stimInitMode,'standard')
+            sendUDP(10);
+        end
     end
 
     function doReset()
@@ -693,8 +715,8 @@ cleanupAll();
         whiteCt = NaN;
         missedFrames = NaN;
         leadSec = 0.2;%~1200 camera frames at 6000 fps, well over the 300 needed
-        sendUDP(10);
-        pause(0.3)%let the projector settle into black first
+        goDark();
+        pause(0.3)%let the projector settle before the lead-in
         capTarget = max(round((leadSec+durMs/1000+0.5)*info.actualRate),1);
         capBuf = zeros(capTarget,nCh);
         capFilled = 0;
@@ -1173,7 +1195,10 @@ cleanupAll();
         end
         if useUDP
             try
-                judp('send',cfg.portNum,cfg.hostIP,int8(10))%leave the dome dark
+                %Only valid after a standard init -- see goDark.
+                if strcmp(stimInitMode,'standard')
+                    judp('send',cfg.portNum,cfg.hostIP,int8(10))%leave the dome dark
+                end
             catch
             end
             if ~isempty(latched.stimFile)
