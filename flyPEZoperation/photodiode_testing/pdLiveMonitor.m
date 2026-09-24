@@ -155,7 +155,7 @@ try
     sIn.startBackground();
 
     hTimer = timer('ExecutionMode','fixedSpacing','Period',0.2,...
-        'TimerFcn',@(~,~) refresh(),'BusyMode','drop');
+        'TimerFcn',@(~,~) safeRefresh(),'BusyMode','drop');
     start(hTimer)
 
     while ~stopFlag && ishandle(hFig)
@@ -226,7 +226,10 @@ cleanupAll();
         else
             applyRange(narrowestContaining(wanted));
         end
-        info.actualRange = sIn.Channels(1).Range;
+        %Reading Range back gives a daq.Range OBJECT, not the [lo hi] pair
+        %that was assigned.  Indexing it as a vector throws "Index exceeds
+        %matrix dimensions" from whichever callback touches it first.
+        info.actualRange = rangeToVector(sIn.Channels(1).Range);
     end
 
     function applyRange(r)
@@ -675,6 +678,24 @@ cleanupAll();
         refresh();
     end
 
+    function safeRefresh()
+        %A throwing TimerFcn only prints "Error while evaluating TimerFcn"
+        %with no stack, and then repeats every period.  Report it properly,
+        %once, and stop -- acquisition keeps running, so the buttons and
+        %Snapshot still work with the display frozen.
+        try
+            refresh();
+        catch ME
+            if ~isempty(hTimer) && isvalid(hTimer)
+                stop(hTimer)
+            end
+            fprintf(2,['\npdLiveMonitor: live display stopped after an '...
+                'error.  Acquisition is still running and the buttons still '...
+                'work.\n%s\n'],getReport(ME,'extended','hyperlinks','off'));
+            status('display stopped -- see command window')
+        end
+    end
+
     function refresh()
         if ~ishandle(hFig)
             return
@@ -936,9 +957,35 @@ if compRef == 5
     cfg.stimuliDir = fullfile(cfg.variablesDir,'visual_stimuli_pez3005');
 end
 try
-    cfg.pezName = sprintf('pez300%d',compData.pez_reference(compRef));
+    %pez_reference holds the full rig number (3002), not the digit.
+    pezRef = compData.pez_reference(compRef);
+    if pezRef >= 1000
+        cfg.pezName = sprintf('pez%d',pezRef);
+    else
+        cfg.pezName = sprintf('pez300%d',pezRef);
+    end
 catch
     cfg.pezName = sprintf('rig%d',compRef);
+end
+
+end
+
+function v = rangeToVector(r)
+%rangeToVector Normalise a channel Range to a numeric [lo hi].
+%The session API accepts [lo hi] on assignment but hands back a daq.Range
+%object on read, so everything downstream has to be insulated from which
+%form it got.
+
+if isempty(r)
+    v = [];
+elseif isnumeric(r)
+    v = double(r(:))';
+else
+    try
+        v = [double(r(1).Min) double(r(1).Max)];
+    catch
+        v = [];
+    end
 end
 
 end
