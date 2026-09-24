@@ -432,7 +432,7 @@ cleanupAll();
         if timerWasOn && ~isempty(hTimer) && isvalid(hTimer)
             start(hTimer)
         end
-        refresh();
+        safeRefresh();%never let a redraw failure escape as a raw callback error
     end
 
     function setButtons(state)
@@ -505,8 +505,12 @@ cleanupAll();
                 status('no duration reply; assuming 3000 ms')
             else
                 error('pdLiveMonitor:badDuration',...
-                    'Stimulus computer returned "%s" instead of a duration for %s.',...
-                    reply,stimFile)
+                    ['Stimulus computer returned "%s" instead of a duration '...
+                    'for %s.\n\nIt replies "error" when it cannot build the '...
+                    'stimulus -- usually because the file is too long or too '...
+                    'large to hold in memory, or was generated for a '...
+                    'different rig (check pez5 = 0). Try a short one: '...
+                    'initStimSize = 5, duration = 3000.'],reply,stimFile)
             end
         end
         latched.stimFile = stimFile;
@@ -652,8 +656,33 @@ cleanupAll();
                 'duration = 3000), or pass ''StimFile'' explicitly.'],...
                 cfg.stimuliDir)
         end
-        [~,longest] = max([hits.bytes]);
-        name = hits(longest).name;
+        %Pick by declared duration, not by file size.  Biggest-file was a bad
+        %heuristic: it selected a 20 s, 90 deg stimulus, which is thousands of
+        %full-screen frames and made the stimulus computer reply "error".
+        %A few seconds is all this needs -- long enough for stable statistics,
+        %short enough to build and hold in memory.
+        targetMs = 3000;
+        durs = nan(numel(hits),1);
+        for iterH = 1:numel(hits)
+            tok = regexp(hits(iterH).name,'_for(\d+)ms_','tokens','once');
+            if ~isempty(tok)
+                durs(iterH) = str2double(tok{1});
+            end
+        end
+        usable = find(durs >= 500 & durs <= 6000);
+        if isempty(usable)
+            list = sprintf('\n  %s',hits.name);
+            error('pdLiveMonitor:noUsableConstSize',...
+                ['None of the constSize files in %s has a usable duration '...
+                '(want 500-6000 ms).  Found:%s\n\nA very long or very large '...
+                'stimulus makes the stimulus computer reply "error" rather '...
+                'than a duration.  Generate a short one with '...
+                'flyPEZguis/stimulusFunctions/loomingStimulusMaker_withReference.m '...
+                '(pez5 = 0, stimChoice = 4, initStimSize = 5, duration = 3000), '...
+                'or pass ''StimFile'' explicitly.'],cfg.stimuliDir,list)
+        end
+        [~,best] = min(abs(durs(usable)-targetMs));
+        name = hits(usable(best)).name;
     end
 
     function doSnapshot()
@@ -722,7 +751,11 @@ cleanupAll();
         end
 
         set(hText,'String',reportText(x))
-        drawnow limitrate
+        %Plain drawnow: 'limitrate' arrived in R2015a and the rig's MATLAB
+        %is older, where it fails with "Unknown command option".  Because
+        %refresh() runs from the 200 ms timer AND from guardedUDP, that one
+        %bad option produced an error storm on every button press.
+        drawnow
     end
 
     function lines = reportText(x)
