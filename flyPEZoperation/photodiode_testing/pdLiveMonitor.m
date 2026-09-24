@@ -14,7 +14,12 @@ function pdLiveMonitor(varargin)
 %   'Channels'  cell array of AI channels (default {'ai0'}).  Pass
 %               {'ai0','ai15','ai10'} to reproduce production's three-channel
 %               multiplexing -- see "THE MUX TEST" below.
-%   'Range'     'auto' (default) or an explicit [lo hi] in volts
+%   'Range'     explicit [lo hi] in volts, default [-10 10].  Deliberately
+%               wide: see "THE 5 V RAIL" below.  Pass 'auto' to probe and
+%               pick the narrowest fitting range instead.
+%   'SensorRail' voltage the sensor saturates at, default 5 (its supply).
+%               Only used to label clipping in the readout, never to alter
+%               the data.
 %   'FlickerHz' expected optical square-wave rate (default 180, see below)
 %   'Window'    seconds of trace on screen (default 0.5)
 %   'CamRate'   camera frame rate to simulate in the verdict (default 6000)
@@ -42,6 +47,22 @@ function pdLiveMonitor(varargin)
 %   fc fine but dcSwing small vs a working rig      -> LIGHT LEVEL / RESPONSIVITY
 %   single channel fine but the mux test much worse -> ACQUISITION CHAIN
 %
+%THE 5 V RAIL.  A phototransistor module run off 5 V saturates at its
+%supply, and a full-screen white frame is far brighter than the 35x35 px
+%reference patch, so White will peg it at a dead-flat 5.000 V while the
+%patch flicker is only a few hundred mV.  That matters because dcSwing is
+%measured from White: if White clipped, dcSwing is understated, and both
+%acPkPk/dcSwing and fc-from-attenuation come out wrong.  The readout
+%detects this and suppresses those two numbers rather than printing a
+%confident wrong answer.
+%
+%The default range is therefore deliberately wide (+/-10 V) rather than
+%auto-probed.  A narrow range makes the DAQ clip at its own ceiling, which
+%is indistinguishable in the trace from the sensor railing -- and those two
+%have completely different fixes.  With headroom, flat-topping at 5.000 V
+%can only be the sensor.  Resolution is not the constraint: a 0.5 V flicker
+%on a +/-10 V range is still ~1600 codes on a 16-bit board.
+%
 %THE MUX TEST.  Production acquires ai0, ai15 and ai10 at nRate*10 scans/s
 %(runPezControl_v13.m:3730) -- 60000 scans/s at 6000 fps, so the ADC
 %multiplexes at ~180 kS/s, about 5.5 us per channel.  A phototransistor
@@ -65,7 +86,8 @@ function pdLiveMonitor(varargin)
 p = inputParser;
 addParameter(p,'Rate',50000);
 addParameter(p,'Channels',{'ai0'});
-addParameter(p,'Range','auto');
+addParameter(p,'Range',[-10 10]);
+addParameter(p,'SensorRail',5);
 addParameter(p,'FlickerHz',180);
 addParameter(p,'Window',0.5);
 addParameter(p,'CamRate',6000);
@@ -444,6 +466,8 @@ cleanupAll();
             return
         end
         lvl = mean(d(:,1));
+        railFrac = mean(d(:,1) >= opt.SensorRail-0.005);
+        daqFrac = clipFraction(d(:,1),info.actualRange);
         if strcmp(which,'dark')
             latched.dcDark = lvl;
             %A dark trace is the only place the noise floor can be measured
@@ -453,6 +477,10 @@ cleanupAll();
         else
             latched.dcWhite = lvl;
             latched.whiteTrace = d(:,1);
+            %If White saturated, dcSwing is a lower bound, not a measurement.
+            latched.whiteRailFrac = railFrac;
+            latched.whiteDaqClipFrac = daqFrac;
+            latched.whiteClipped = railFrac > 0.02 || daqFrac > 0.02;
         end
         if ~isnan(latched.dcDark) && ~isnan(latched.dcWhite)
             latched.dcSwing = latched.dcWhite-latched.dcDark;
@@ -564,7 +592,7 @@ cleanupAll();
         if ~isnan(latched.riseTime) && latched.riseTime > 0
             latched.fcFromRise = 0.35/latched.riseTime;
         end
-        if ~isnan(latched.dcSwing) && latched.dcSwing ~= 0
+        if ~isnan(latched.dcSwing) && latched.dcSwing ~= 0 && ~latched.whiteClipped
             r = abs(latched.acPkPk/latched.dcSwing);
             latched.acOverDc = r;
             %Single-pole steady-state response to a square wave of period T:
@@ -689,8 +717,10 @@ cleanupAll();
         end
         L{end+1} = sprintf('  live min/max %+.4f / %+.4f V   mean %+.4f V',...
             min(x),max(x),mean(x));
-        L{end+1} = sprintf('  clipped      %.2f %% of samples at the rails',...
+        L{end+1} = sprintf('  at DAQ rails %.2f %% of samples',...
             100*clipFraction(x,info.actualRange));
+        L{end+1} = sprintf('  at %.1f V rail %.2f %% of samples',...
+            opt.SensorRail,100*mean(x >= opt.SensorRail-0.005));
         L{end+1} = sprintf('  live pk-pk   %.4f V (robust, @%g Hz)',...
             robustPkPk(x,Fs,opt.FlickerHz),opt.FlickerHz);
         L{end+1} = '';
@@ -699,18 +729,37 @@ cleanupAll();
         L{end+1} = sprintf('  dcDark       %s',fmtV(latched.dcDark));
         L{end+1} = sprintf('  dcWhite      %s',fmtV(latched.dcWhite));
         L{end+1} = sprintf('  dcSwing      %s',fmtV(latched.dcSwing));
+        if latched.whiteClipped
+            if latched.whiteDaqClipFrac > 0.02
+                L{end+1} = '  !! White hit the DAQ RANGE ceiling. Widen ''Range''.';
+            else
+                L{end+1} = sprintf(...
+                    '  !! White saturated the SENSOR at its %.1f V rail (%.0f%% of',...
+                    opt.SensorRail,100*latched.whiteRailFrac);
+                L{end+1} = '     samples). Too much light or too much gain: use a';
+                L{end+1} = '     smaller load resistor, or stop down the sensor.';
+            end
+            L{end+1} = '     dcSwing is a LOWER BOUND, so the two numbers below';
+            L{end+1} = '     that depend on it are withheld.';
+        end
         L{end+1} = '';
 
         L{end+1} = 'BANDWIDTH';
         L{end+1} = sprintf('  AC pk-pk     %s',fmtV(latched.acPkPk));
-        L{end+1} = sprintf('  acPkPk/dcSwing %s   <- the discriminator  [want >0.75]',...
-            fmtN(latched.acOverDc));
+        if latched.whiteClipped
+            L{end+1} = '  acPkPk/dcSwing withheld -- White clipped (see above)';
+        else
+            L{end+1} = sprintf('  acPkPk/dcSwing %s   <- the discriminator  [want >0.75]',...
+                fmtN(latched.acOverDc));
+        end
         L{end+1} = '     (ceiling is below 1 even for an ideal sensor: White drives';
         L{end+1} = '      all three sub-frames at 255, the flicker is 255<->10 at 50%)';
         L{end+1} = sprintf('  rise 10-90   %s  [want <2.9 ms]',fmtMs(latched.riseTime));
         L{end+1} = sprintf('  fall 90-10   %s',fmtMs(latched.fallTime));
         L{end+1} = sprintf('  fc from rise %s  [want >120 Hz]',fmtHz(latched.fcFromRise));
-        if latched.fcAttenSaturated
+        if latched.whiteClipped
+            L{end+1} = '  fc from atten withheld -- needs an unclipped dcSwing';
+        elseif latched.fcAttenSaturated
             L{end+1} = '  fc from atten >300 Hz (ratio saturated: too fast to resolve';
             L{end+1} = '                         this way, which is good news)';
         else
@@ -1080,6 +1129,7 @@ L = struct('dcDark',NaN,'dcWhite',NaN,'dcSwing',NaN,'acPkPk',NaN,...
     'fcFromAtten',NaN,'noiseFloor',NaN,'snr',NaN,'whiteCt',NaN,...
     'whiteCtEstimated',false,'missedFrames',NaN,'stimFile','',...
     'stimDurationMs',NaN,'leadInSec',NaN,'fcAttenSaturated',false,...
+    'whiteClipped',false,'whiteRailFrac',NaN,'whiteDaqClipFrac',NaN,...
     'cycleTemplate',[],'cycleTime',[],'cycleLo',NaN,...
     'cycleHi',NaN,'darkTrace',[],'whiteTrace',[],'flickerTrace',[],...
     'verdict',[],'verdictError','');
