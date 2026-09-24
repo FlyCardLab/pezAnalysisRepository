@@ -18,8 +18,10 @@ function pdLiveMonitor(varargin)
 %               wide: see "THE 5 V RAIL" below.  Pass 'auto' to probe and
 %               pick the narrowest fitting range instead.
 %   'Repeats'   how many back-to-back presentations per Flicker press,
-%               default 3.  Each is captured separately with its own dark
-%               lead-in, and the reported metrics are medians across them.
+%               default 1.  Raise it only if the stimulus computer is
+%               presenting reliably; each repeat is captured separately with
+%               its own dark lead-in and the metrics become medians across
+%               them, with the spread shown.
 %   'InitMode'  'transforming' (default) or 'standard'.  Picks which half
 %               of the measurement this session can do -- see below.
 %   'SensorRail' voltage the sensor saturates at, default 5 (its supply).
@@ -115,7 +117,7 @@ addParameter(p,'Channels',{'ai0'});
 addParameter(p,'Range',[-10 10]);
 addParameter(p,'SensorRail',5);
 addParameter(p,'InitMode','transforming');
-addParameter(p,'Repeats',3);
+addParameter(p,'Repeats',1);
 addParameter(p,'FlickerHz',180);
 addParameter(p,'Window',0.5);
 addParameter(p,'CamRate',6000);
@@ -395,9 +397,13 @@ cleanupAll();
         title(axCycle,sprintf('Cycle average @ %g Hz (press Flicker)',opt.FlickerHz))
         grid(axCycle,'on')
 
-        hText = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
+        %A 'text' uicontrol clips silently -- anything past the bottom of the
+        %box cannot be reached at all.  A listbox scrolls.  Min/Max and an
+        %empty Value make it read-only in effect (nothing stays selected).
+        hText = uicontrol('Parent',hFig,'Style','listbox','Units','normalized',...
             'Position',[0.44 0.07 0.52 0.44],'HorizontalAlignment','left',...
-            'BackgroundColor',[1 1 1],'FontName','Courier New','FontSize',9);
+            'BackgroundColor',[1 1 1],'FontName','Courier New','FontSize',9,...
+            'Min',0,'Max',2,'Value',[],'String',{''});
 
         btnW = 0.092;
         btnY = 0.955;
@@ -938,7 +944,13 @@ cleanupAll();
             set(axCycle,'XLim',xl)
         end
 
-        set(hText,'String',reportText(x))
+        %Preserve the scroll position: this redraws five times a second, and
+        %resetting ListboxTop each time would make the panel impossible to
+        %read anywhere but the top.
+        lines = reportText(x);
+        oldTop = get(hText,'ListboxTop');
+        set(hText,'String',lines,'Value',[])
+        set(hText,'ListboxTop',max(1,min(oldTop,numel(lines))))
         %Plain drawnow: 'limitrate' arrived in R2015a and the rig's MATLAB
         %is older, where it fails with "Unknown command option".  Because
         %refresh() runs from the 200 ms timer AND from guardedUDP, that one
@@ -946,9 +958,59 @@ cleanupAll();
         drawnow
     end
 
+    function L = bottomLine()
+        %The go/no-go, stated plainly.  Two independent questions: is the
+        %sensor physically fast enough, and would the rig's own gate accept
+        %the trace.  They can disagree -- a fast sensor can still fail the
+        %gate on peak timing -- so report both.
+        want = 120;%Hz, the corner frequency the rig's gate needs (pdSelfTest)
+        L = {};
+        L{end+1} = '===== CAN THIS SENSOR DO 120 Hz? =====';
+        if isnan(latched.fcFromRise)
+            L{end+1} = '  not measured yet -- press Flicker';
+        elseif latched.fcFromRise >= want
+            L{end+1} = sprintf('  YES.  fc %.0f Hz  (%.1fx the %d Hz needed)',...
+                latched.fcFromRise,latched.fcFromRise/want,want);
+            L{end+1} = sprintf('        rise %.3f ms, needs to be under 2.9 ms',...
+                latched.riseTime*1000);
+        else
+            L{end+1} = sprintf('  NO.  fc %.0f Hz, needs to be over %d Hz',...
+                latched.fcFromRise,want);
+            L{end+1} = sprintf('        rise %.3f ms, needs to be under 2.9 ms',...
+                latched.riseTime*1000);
+        end
+        if ~isnan(latched.riseSpread) && ~isnan(latched.riseTime) &&...
+                latched.riseTime > 0 && latched.riseSpread > 0.25*latched.riseTime
+            L{end+1} = '  CAUTION: rise time varies a lot between repeats --';
+            L{end+1} = '           treat the number above as unreliable.';
+        end
+
+        if isempty(latched.verdict)
+            L{end+1} = '  rig gate:  press Flicker to score a trace';
+        else
+            nRep = size(latched.verdict,1);
+            for iterCol = 1:size(latched.verdict,2)
+                col = latched.verdict(:,iterCol);
+                nGood = sum(strcmp({col.decision},'good photodiode'));
+                if nGood == nRep
+                    word = 'PASS';
+                else
+                    word = 'FAIL';
+                end
+                L{end+1} = sprintf('  rig gate:  %s  %s (%d of %d) - %s',...
+                    word,col(1).variant,nGood,nRep,col(1).decision); %#ok<AGROW>
+            end
+        end
+    end
+
     function lines = reportText(x)
         Fs = info.actualRate;
         L = {};
+        %The answer first.  The panel is taller than its box, so whatever
+        %matters most has to be readable without scrolling.
+        L = [L,bottomLine()];
+        L{end+1} = '';
+
         L{end+1} = sprintf('ACQUISITION   %d ch @ %.0f S/s/ch  (%.0f kS/s aggregate)',...
             nCh,Fs,Fs*nCh/1000);
         if isempty(info.actualRange)
