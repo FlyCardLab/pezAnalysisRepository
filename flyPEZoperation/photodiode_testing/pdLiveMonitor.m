@@ -18,13 +18,10 @@ function pdLiveMonitor(varargin)
 %               wide: see "THE 5 V RAIL" below.  Pass 'auto' to probe and
 %               pick the narrowest fitting range instead.
 %   'Repeats'   how many back-to-back presentations per Flicker press,
-%               default 1.  Raise it only if the stimulus computer is
-%               presenting reliably; each repeat is captured separately with
-%               its own dark lead-in and the metrics become medians across
-%               them, with the spread shown.
-%   'InitMode'  which init to start in, 'transforming' (default, for
-%               Flicker) or 'standard' (for White/Dark).  Only sets the
-%               starting mode; buttons switch it as needed -- see below.
+%               default 3.  Each is captured separately with its own dark
+%               lead-in, and the reported metrics are medians across them.
+%   'InitMode'  'transforming' (default) or 'standard'.  Picks which half
+%               of the measurement this session can do -- see below.
 %   'SensorRail' voltage the sensor saturates at, default 5 (its supply).
 %               Only used to label clipping in the readout, never to alter
 %               the data.
@@ -57,28 +54,24 @@ function pdLiveMonitor(varargin)
 %   fc fine but dcSwing small vs a working rig      -> LIGHT LEVEL / RESPONSIVITY
 %   single channel fine but the mux test much worse -> ACQUISITION CHAIN
 %
-%WHITE/DARK AND FLICKER NEED DIFFERENT INITS, AND SWITCHING COSTS A RESET.
-%The listener keeps two pieces of state and each command needs a different
-%one:
+%YOU CANNOT DO BOTH HALVES IN ONE SESSION.  The listener keeps two pieces
+%of state and each command needs a different one:
 %   command 0 ("transforming") -> stimStruct,     needed by 3/4 = Flicker
 %   command 5 ("standard")     -> stimTrigStruct, needed by 9/10 = White/Dark
-%Each init opens its own Psychtoolbox window, and opening a window
-%invalidates every texture and proxy handle from the previous one.  Switch
-%without clearing up and Flicker dies with "'transformProxyPtr' argument
-%must be a handle to a proxy object" and the console fills with "Invalid
-%Window (or Texture) Index".
+%They are mutually destructive: each opens its own Psychtoolbox window, and
+%opening a window invalidates every texture and proxy handle from the
+%previous one.  Send a 5 after a 0 and stimStruct.warpoperator is left
+%dangling, so Flicker dies with "'transformProxyPtr' argument must be a
+%handle to a proxy object", returns a partial struct, and everything after
+%it fails with "Invalid Window (or Texture) Index".
 %
-%So every button works, but pressing one that needs the other mode first
-%sends command 86 (sca + PsychStartup) to tear the stimulus computer down
-%cleanly, then re-inits.  That takes a few seconds and the projector will
-%blank and come back -- expected, not a fault.  Group your presses by mode
-%if you want to avoid the wait: all the White/Dark work, then all the
-%Flicker work.
+%So the buttons this session cannot drive are greyed out, and the sequence
+%is: run one mode, then Reset stim (86) and restart in the other.
 %
-%For the bandwidth question you only need Flicker.  Rise time and
-%fc-from-rise come from the flicker's own cycle average and never touch
-%White/Dark, which only supply the DC swing for acPkPk/dcSwing and
-%fc-from-attenuation.
+%For the bandwidth question you only need the default 'transforming' mode.
+%Rise time and fc-from-rise come from the flicker's own cycle average and
+%do not need White/Dark at all.  'standard' is only for the DC swing, which
+%feeds acPkPk/dcSwing and fc-from-attenuation.
 %
 %THE 5 V RAIL.  A phototransistor module run off 5 V saturates at its
 %supply, and a full-screen white frame is far brighter than the 35x35 px
@@ -122,7 +115,7 @@ addParameter(p,'Channels',{'ai0'});
 addParameter(p,'Range',[-10 10]);
 addParameter(p,'SensorRail',5);
 addParameter(p,'InitMode','transforming');
-addParameter(p,'Repeats',1);
+addParameter(p,'Repeats',3);
 addParameter(p,'FlickerHz',180);
 addParameter(p,'Window',0.5);
 addParameter(p,'CamRate',6000);
@@ -257,7 +250,9 @@ cleanupAll();
             hi = max(probe(:,1));
             pad = max(0.25*(hi-lo),0.01);
             applyRange(narrowestContaining([lo-pad hi+pad]));
-            goDark();%guarded: 10 is only valid after a standard init
+            if useUDP
+                sendUDP(10);
+            end
         else
             applyRange(narrowestContaining(wanted));
         end
@@ -400,13 +395,9 @@ cleanupAll();
         title(axCycle,sprintf('Cycle average @ %g Hz (press Flicker)',opt.FlickerHz))
         grid(axCycle,'on')
 
-        %A 'text' uicontrol clips silently -- anything past the bottom of the
-        %box cannot be reached at all.  A listbox scrolls.  Min/Max and an
-        %empty Value make it read-only in effect (nothing stays selected).
-        hText = uicontrol('Parent',hFig,'Style','listbox','Units','normalized',...
+        hText = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
             'Position',[0.44 0.07 0.52 0.44],'HorizontalAlignment','left',...
-            'BackgroundColor',[1 1 1],'FontName','Courier New','FontSize',9,...
-            'Min',0,'Max',2,'Value',[],'String',{''});
+            'BackgroundColor',[1 1 1],'FontName','Courier New','FontSize',9);
 
         btnW = 0.092;
         btnY = 0.955;
@@ -418,6 +409,13 @@ cleanupAll();
         mkButton(0.560,btnY,btnW,'Snapshot',@(~,~) doSnapshot(),'local');
         mkButton(0.660,btnY,btnW,'Clear nums',@(~,~) resetLatched(),'local');
 
+        %Grey out whatever this session's init mode cannot drive, rather than
+        %letting a press corrupt the stimulus computer's window state.
+        if strcmp(opt.InitMode,'transforming')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+        else
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
+        end
 
         hStatus = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
             'Position',[0.755 btnY-0.004 0.20 0.030],'HorizontalAlignment','right',...
@@ -487,6 +485,12 @@ cleanupAll();
         if strcmp(state,'off')
             return
         end
+        %Re-enabling must not resurrect buttons this session cannot use.
+        if strcmp(opt.InitMode,'transforming')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+        else
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
+        end
         if ~useUDP
             set(findobj(hFig,'Tag','udp'),'Enable','off')
             set(findobj(hFig,'Tag','standard'),'Enable','off')
@@ -512,20 +516,18 @@ cleanupAll();
         %
         %Hence: pick a mode, do that half of the measurement, and restart with
         %a reset in between if you need the other half.
+        if ~strcmp(mode,opt.InitMode)
+            error('pdLiveMonitor:wrongInitMode',...
+                ['This action needs the "%s" init but the session was started '...
+                'in "%s".\n\nThey cannot coexist: each opens its own PTB '...
+                'window and invalidates the other''s texture handles.\n\n'...
+                'Close this window, press Reset on the stimulus computer (or '...
+                'send command 86), then run:\n'...
+                '    pdLiveMonitor(''InitMode'',''%s'')'],...
+                mode,opt.InitMode,mode)
+        end
         if strcmp(stimInitMode,mode)
             return
-        end
-        %Switching modes is safe ONLY through a full reset.  Each init opens
-        %its own PTB window, and opening one invalidates every texture and
-        %proxy handle from the previous -- that is what produced the
-        %'transformProxyPtr' and 'Invalid Window (or Texture) Index' storms.
-        %Command 86 is sca + PsychStartup, which tears the whole lot down so
-        %the next init starts clean.  Costs a few seconds; worth it.
-        if ~strcmp(stimInitMode,'none')
-            status('switching mode: resetting stimulus computer...')
-            sendUDP(86);
-            pause(4)
-            stimInitMode = 'none';
         end
         switch mode
             case 'standard'
@@ -549,31 +551,9 @@ cleanupAll();
             error('pdLiveMonitor:initFailed',...
                 ['Stimulus computer could not complete command %d.  It only '...
                 'ever replies a bare "error"; THE REAL EXCEPTION IS PRINTED '...
-                'ON ITS OWN COMMAND WINDOW -- look there.\n\nIf it says '...
-                '"Unrecognized function or variable ''screenid''", the '...
-                'projector is not being seen as a second display: '...
-                'Screen(''Screens'') is returning one screen, so '...
-                'initializeVisualStimulusGeneralUDP_brighter never finds a '...
-                '1024- or 1280-wide one to draw on.  That is a display '...
-                'problem on the stimulus computer, not something this tool '...
-                'can fix -- check the projector is powered and that Windows '...
-                'is extending rather than duplicating.'],code)
+                'ON ITS OWN COMMAND WINDOW -- look there.'],code)
         end
         stimInitMode = mode;
-    end
-
-    function goDark()
-        %Command 10 needs stimTrigStruct.gainMatrix, which only a standard
-        %init creates.  Sending it under a transforming init throws "Dot
-        %indexing is not supported" on the stimulus computer.
-        %
-        %Not sending it is fine: the sensor watches the 35x35 px reference
-        %patch, not the dome, and that patch is already black at idle
-        %(stimRefImageB in initializeFramesFromFileUDP).  So the lead-in is
-        %dark where it matters either way.
-        if strcmp(stimInitMode,'standard')
-            sendUDP(10);
-        end
     end
 
     function doReset()
@@ -707,8 +687,8 @@ cleanupAll();
         whiteCt = NaN;
         missedFrames = NaN;
         leadSec = 0.2;%~1200 camera frames at 6000 fps, well over the 300 needed
-        goDark();
-        pause(0.3)%let the projector settle before the lead-in
+        sendUDP(10);
+        pause(0.3)%let the projector settle into black first
         capTarget = max(round((leadSec+durMs/1000+0.5)*info.actualRate),1);
         capBuf = zeros(capTarget,nCh);
         capFilled = 0;
@@ -958,13 +938,7 @@ cleanupAll();
             set(axCycle,'XLim',xl)
         end
 
-        %Preserve the scroll position: this redraws five times a second, and
-        %resetting ListboxTop each time would make the panel impossible to
-        %read anywhere but the top.
-        lines = reportText(x);
-        oldTop = get(hText,'ListboxTop');
-        set(hText,'String',lines,'Value',[])
-        set(hText,'ListboxTop',max(1,min(oldTop,numel(lines))))
+        set(hText,'String',reportText(x))
         %Plain drawnow: 'limitrate' arrived in R2015a and the rig's MATLAB
         %is older, where it fails with "Unknown command option".  Because
         %refresh() runs from the 200 ms timer AND from guardedUDP, that one
@@ -972,59 +946,9 @@ cleanupAll();
         drawnow
     end
 
-    function L = bottomLine()
-        %The go/no-go, stated plainly.  Two independent questions: is the
-        %sensor physically fast enough, and would the rig's own gate accept
-        %the trace.  They can disagree -- a fast sensor can still fail the
-        %gate on peak timing -- so report both.
-        want = 120;%Hz, the corner frequency the rig's gate needs (pdSelfTest)
-        L = {};
-        L{end+1} = '===== CAN THIS SENSOR DO 120 Hz? =====';
-        if isnan(latched.fcFromRise)
-            L{end+1} = '  not measured yet -- press Flicker';
-        elseif latched.fcFromRise >= want
-            L{end+1} = sprintf('  YES.  fc %.0f Hz  (%.1fx the %d Hz needed)',...
-                latched.fcFromRise,latched.fcFromRise/want,want);
-            L{end+1} = sprintf('        rise %.3f ms, needs to be under 2.9 ms',...
-                latched.riseTime*1000);
-        else
-            L{end+1} = sprintf('  NO.  fc %.0f Hz, needs to be over %d Hz',...
-                latched.fcFromRise,want);
-            L{end+1} = sprintf('        rise %.3f ms, needs to be under 2.9 ms',...
-                latched.riseTime*1000);
-        end
-        if ~isnan(latched.riseSpread) && ~isnan(latched.riseTime) &&...
-                latched.riseTime > 0 && latched.riseSpread > 0.25*latched.riseTime
-            L{end+1} = '  CAUTION: rise time varies a lot between repeats --';
-            L{end+1} = '           treat the number above as unreliable.';
-        end
-
-        if isempty(latched.verdict)
-            L{end+1} = '  rig gate:  press Flicker to score a trace';
-        else
-            nRep = size(latched.verdict,1);
-            for iterCol = 1:size(latched.verdict,2)
-                col = latched.verdict(:,iterCol);
-                nGood = sum(strcmp({col.decision},'good photodiode'));
-                if nGood == nRep
-                    word = 'PASS';
-                else
-                    word = 'FAIL';
-                end
-                L{end+1} = sprintf('  rig gate:  %s  %s (%d of %d) - %s',...
-                    word,col(1).variant,nGood,nRep,col(1).decision); %#ok<AGROW>
-            end
-        end
-    end
-
     function lines = reportText(x)
         Fs = info.actualRate;
         L = {};
-        %The answer first.  The panel is taller than its box, so whatever
-        %matters most has to be readable without scrolling.
-        L = [L,bottomLine()];
-        L{end+1} = '';
-
         L{end+1} = sprintf('ACQUISITION   %d ch @ %.0f S/s/ch  (%.0f kS/s aggregate)',...
             nCh,Fs,Fs*nCh/1000);
         if isempty(info.actualRange)
@@ -1187,10 +1111,7 @@ cleanupAll();
         end
         if useUDP
             try
-                %Only valid after a standard init -- see goDark.
-                if strcmp(stimInitMode,'standard')
-                    judp('send',cfg.portNum,cfg.hostIP,int8(10))%leave the dome dark
-                end
+                judp('send',cfg.portNum,cfg.hostIP,int8(10))%leave the dome dark
             catch
             end
             if ~isempty(latched.stimFile)
