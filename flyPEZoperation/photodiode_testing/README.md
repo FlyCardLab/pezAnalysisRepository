@@ -94,11 +94,13 @@ pdLiveMonitor
 
 #### Repeats
 
-One **Flicker** press presents the stimulus three times back to back (`'Repeats',N` to
-change it). Each repeat is captured separately with its own dark lead-in, because
+One **Flicker** press presents the stimulus once by default. Raise it with
+`'Repeats',N` only once the stimulus computer is presenting reliably — repeated
+back-to-back presentations are a good way to expose intermittent faults, but a bad way to
+work when presentation itself is the thing failing. Each repeat is captured separately with its own dark lead-in, because
 `pdVerdict`'s baseline is the median of the first 300 frames and needs real dark there.
 
-Reported metrics are **medians** across repeats, with the spread shown beside them, and
+With more than one repeat, reported metrics are **medians** across them, with the spread shown beside them, and
 the verdict line reads `good photodiode 2 of 3` rather than collapsing to one answer. A
 large spread means the measurement isn't trustworthy however good the median looks — and
 a mixed verdict usually points at something intermittent (dropped projector flips, stray
