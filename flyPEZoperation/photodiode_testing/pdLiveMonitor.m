@@ -17,6 +17,9 @@ function pdLiveMonitor(varargin)
 %   'Range'     explicit [lo hi] in volts, default [-10 10].  Deliberately
 %               wide: see "THE 5 V RAIL" below.  Pass 'auto' to probe and
 %               pick the narrowest fitting range instead.
+%   'Repeats'   how many back-to-back presentations per Flicker press,
+%               default 3.  Each is captured separately with its own dark
+%               lead-in, and the reported metrics are medians across them.
 %   'InitMode'  'transforming' (default) or 'standard'.  Picks which half
 %               of the measurement this session can do -- see below.
 %   'SensorRail' voltage the sensor saturates at, default 5 (its supply).
@@ -112,6 +115,7 @@ addParameter(p,'Channels',{'ai0'});
 addParameter(p,'Range',[-10 10]);
 addParameter(p,'SensorRail',5);
 addParameter(p,'InitMode','transforming');
+addParameter(p,'Repeats',3);
 addParameter(p,'FlickerHz',180);
 addParameter(p,'Window',0.5);
 addParameter(p,'CamRate',6000);
@@ -629,16 +633,62 @@ cleanupAll();
         latched.stimFile = stimFile;
         latched.stimDurationMs = durMs;
 
-        %Start recording BEFORE triggering, so the capture has a genuine
-        %pre-stimulus dark lead-in.  pdVerdict's v13 baseline is
-        %median(first 300 camera frames); without a dark lead-in that lands
-        %halfway up the square wave and every score is meaningless.  200 ms
-        %is ~1200 frames at 6000 fps, comfortably more than the 300 needed.
-        leadSec = 0.2;
-        status('dark lead-in...')
+        %Load once, present Repeats times.  Each repeat is captured
+        %separately with its own dark lead-in rather than as one long
+        %recording, so every trace is independently valid for pdVerdict --
+        %its baseline is median(first 300 frames) and needs real dark there.
+        traces = cell(opt.Repeats,1);
+        whiteCts = nan(opt.Repeats,1);
+        missed = nan(opt.Repeats,1);
+        for iterR = 1:opt.Repeats
+            if ~ishandle(hFig)
+                break
+            end
+            status(sprintf('repeat %d of %d: dark lead-in...',iterR,opt.Repeats))
+            [d,wc,mf] = presentOnce(durMs);
+            traces{iterR} = d;
+            whiteCts(iterR) = wc;
+            missed(iterR) = mf;
+        end
+
+        keep = ~cellfun(@isempty,traces);
+        traces = traces(keep);
+        whiteCts = whiteCts(keep);
+        missed = missed(keep);
+        if isempty(traces)
+            status('no data captured')
+            return
+        end
+
+        latched.repeatTraces = traces;
+        latched.repeatWhiteCts = whiteCts;
+        latched.flickerTrace = traces{1};
+        latched.whiteCt = median(whiteCts(~isnan(whiteCts)));
+        if isempty(latched.whiteCt)
+            latched.whiteCt = NaN;
+        end
+        latched.missedFrames = max(missed);
+
+        %Analyse whatever was captured, even if something downstream fails --
+        %a populated panel from a partial capture beats an empty one.
+        try
+            analyseFlicker(traces);
+            status(sprintf('flicker latched (%d repeats)',numel(traces)))
+        catch ME
+            latched.verdictError = ME.message;
+            fprintf(2,'\npdLiveMonitor: flicker analysis failed:\n%s\n',...
+                getReport(ME,'extended','hyperlinks','off'));
+            status('captured, but analysis failed')
+        end
+    end
+
+    function [d,whiteCt,missedFrames] = presentOnce(durMs)
+        %One dark lead-in plus one presentation, captured as a single trace.
+        whiteCt = NaN;
+        missedFrames = NaN;
+        leadSec = 0.2;%~1200 camera frames at 6000 fps, well over the 300 needed
         sendUDP(10);
         pause(0.3)%let the projector settle into black first
-        status(sprintf('presenting %.0f ms...',durMs))
         capTarget = max(round((leadSec+durMs/1000+0.5)*info.actualRate),1);
         capBuf = zeros(capTarget,nCh);
         capFilled = 0;
@@ -662,52 +712,90 @@ cleanupAll();
         pause(0.2)
         capturing = false;
         d = capBuf(1:capFilled,:);
+        if ~isempty(d)
+            d = d(:,1);
+        end
 
         parts = strsplit(reply,';');
         if numel(parts) >= 2
-            latched.missedFrames = str2double(parts{1});
-            latched.whiteCt = str2double(parts{2});
-        elseif isempty(reply)
-            %Non-fatal: the trace is still good, we just have to estimate
-            %the expected pulse count instead of being told it.
-            status('no reply; whiteCt estimated')
-        end
-        if isempty(d)
-            status('no data captured')
-            return
-        end
-        latched.flickerTrace = d(:,1);
-        %Analyse whatever was captured, even if something downstream fails --
-        %a populated panel from a partial capture beats an empty one.
-        try
-            analyseFlicker(d(:,1));
-            status('flicker latched')
-        catch ME
-            latched.verdictError = ME.message;
-            fprintf(2,'\npdLiveMonitor: flicker analysis failed:\n%s\n',...
-                getReport(ME,'extended','hyperlinks','off'));
-            status('captured, but analysis failed')
+            missedFrames = str2double(parts{1});
+            whiteCt = str2double(parts{2});
         end
     end
 
-    function analyseFlicker(x)
+    function analyseFlicker(traces)
+        %traces is a cell array, one entry per repeat.  Every per-repeat
+        %metric is computed independently and then reduced with a median, so
+        %one bad presentation (a dropped frame, a stray light event) cannot
+        %drag the answer around the way averaging would.  The spread across
+        %repeats is kept too -- if it is large, the measurement is not
+        %trustworthy however good the median looks.
         Fs = info.actualRate;
-        %The AC metrics must see only the stimulus; the dark lead-in is
-        %there for pdVerdict's baseline and would dilute them.
         lead = latched.leadInSec;
         if isnan(lead)
             lead = 0;
         end
-        firstStim = min(round(lead*Fs)+1,numel(x));
-        xs = x(firstStim:end);
+        n = numel(traces);
+        latched.nRepeats = n;
 
-        latched.acPkPk = robustPkPk(xs,Fs,opt.FlickerHz);
-        [tpl,tplT] = cycleAverage(xs,Fs,opt.FlickerHz);
-        latched.cycleTemplate = tpl;
-        latched.cycleTime = tplT;
-        [latched.riseTime,latched.fallTime,lo,hi] = edgeTimes(tpl,tplT);
-        latched.cycleLo = lo;
-        latched.cycleHi = hi;
+        pk = nan(n,1);
+        rise = nan(n,1);
+        fall = nan(n,1);
+        tpls = [];
+        verdicts = [];
+        for iterT = 1:n
+            x = traces{iterT};
+            %AC metrics must see only the stimulus; the dark lead-in is there
+            %for pdVerdict's baseline and would dilute them.
+            firstStim = min(round(lead*Fs)+1,numel(x));
+            xs = x(firstStim:end);
+
+            pk(iterT) = robustPkPk(xs,Fs,opt.FlickerHz);
+            [tpl,tplT] = cycleAverage(xs,Fs,opt.FlickerHz);
+            if ~isempty(tpl)
+                if isempty(tpls)
+                    tpls = tpl(:);
+                    latched.cycleTime = tplT;
+                elseif numel(tpl) == size(tpls,1)
+                    tpls = [tpls,tpl(:)]; %#ok<AGROW>
+                end
+                [rise(iterT),fall(iterT)] = edgeTimes(tpl,tplT);
+            end
+
+            wc = latched.whiteCt;
+            if isnan(wc)
+                wc = numel(x)/Fs*opt.FlickerHz;
+                latched.whiteCtEstimated = true;
+            else
+                latched.whiteCtEstimated = false;
+            end
+            try
+                v = pdVerdict(x,Fs,opt.CamRate,wc,'Variant','both');
+                if isempty(verdicts)
+                    verdicts = v;
+                else
+                    verdicts(end+1,:) = v; %#ok<AGROW>
+                end
+            catch ME
+                latched.verdictError = ME.message;
+            end
+        end
+
+        latched.acPkPk = nanmedianLocal(pk);
+        latched.acPkPkSpread = localRange(pk);
+        latched.riseTime = nanmedianLocal(rise);
+        latched.riseSpread = localRange(rise);
+        latched.fallTime = nanmedianLocal(fall);
+        latched.verdict = verdicts;
+
+        %Median across repeats of the folded waveform, so the displayed
+        %template matches the numbers rather than being one arbitrary repeat.
+        if ~isempty(tpls)
+            latched.cycleTemplate = median(tpls,2);
+            [~,~,lo,hi] = edgeTimes(latched.cycleTemplate,latched.cycleTime);
+            latched.cycleLo = lo;
+            latched.cycleHi = hi;
+        end
 
         if ~isnan(latched.riseTime) && latched.riseTime > 0
             latched.fcFromRise = 0.35/latched.riseTime;
@@ -732,19 +820,6 @@ cleanupAll();
         end
         if ~isnan(latched.noiseFloor) && latched.noiseFloor > 0
             latched.snr = latched.acPkPk/latched.noiseFloor;
-        end
-
-        wc = latched.whiteCt;
-        if isnan(wc)
-            wc = numel(x)/Fs*opt.FlickerHz;
-            latched.whiteCtEstimated = true;
-        else
-            latched.whiteCtEstimated = false;
-        end
-        try
-            latched.verdict = pdVerdict(x,Fs,opt.CamRate,wc,'Variant','both');
-        catch ME
-            latched.verdictError = ME.message;
         end
     end
 
@@ -912,7 +987,11 @@ cleanupAll();
         L{end+1} = '';
 
         L{end+1} = 'BANDWIDTH';
-        L{end+1} = sprintf('  AC pk-pk     %s',fmtV(latched.acPkPk));
+        if latched.nRepeats > 0
+            L{end+1} = sprintf('  repeats      %d',latched.nRepeats);
+        end
+        L{end+1} = sprintf('  AC pk-pk     %s%s',fmtV(latched.acPkPk),...
+            fmtSpread(latched.acPkPkSpread,'V'));
         if latched.whiteClipped
             L{end+1} = '  acPkPk/dcSwing withheld -- White clipped (see above)';
         else
@@ -921,7 +1000,8 @@ cleanupAll();
         end
         L{end+1} = '     (ceiling is below 1 even for an ideal sensor: White drives';
         L{end+1} = '      all three sub-frames at 255, the flicker is 255<->10 at 50%)';
-        L{end+1} = sprintf('  rise 10-90   %s  [want <2.9 ms]',fmtMs(latched.riseTime));
+        L{end+1} = sprintf('  rise 10-90   %s%s  [want <2.9 ms]',...
+            fmtMs(latched.riseTime),fmtSpread(latched.riseSpread*1000,'ms'));
         L{end+1} = sprintf('  fall 90-10   %s',fmtMs(latched.fallTime));
         L{end+1} = sprintf('  fc from rise %s  [want >120 Hz]',fmtHz(latched.fcFromRise));
         if latched.whiteClipped
@@ -940,15 +1020,26 @@ cleanupAll();
         L{end+1} = sprintf('  noise floor  %s (median IQR, dark trace)',fmtV(latched.noiseFloor));
         L{end+1} = sprintf('  SNR          %s  [want >5]',fmtN(latched.snr));
         if ~isempty(latched.verdict)
-            for iterV = 1:numel(latched.verdict)
-                vv = latched.verdict(iterV);
-                L{end+1} = sprintf('  [%-11s] %s',vv.variant,vv.decision); %#ok<AGROW>
-                L{end+1} = sprintf('     photoSignalTest %.2f vs threshold %d (margin %+.2f)',...
-                    vv.photoSignalTest,vv.threshold,vv.marginToThreshold); %#ok<AGROW>
-                L{end+1} = sprintf('     avgBase %+.4f  avgPeak %+.4f  minRange %.5f',...
-                    vv.avgBase,vv.avgPeak,vv.minRange); %#ok<AGROW>
-                L{end+1} = sprintf('     peaks %d of whiteCt %g   peak-spacing spread %g',...
-                    vv.nPeaks,vv.whiteCt,vv.rangeDiffPeaks); %#ok<AGROW>
+            nRep = size(latched.verdict,1);
+            for iterCol = 1:size(latched.verdict,2)
+                col = latched.verdict(:,iterCol);
+                nGood = sum(strcmp({col.decision},'good photodiode'));
+                L{end+1} = sprintf('  [%-11s] good photodiode %d of %d repeats',...
+                    col(1).variant,nGood,nRep); %#ok<AGROW>
+                if nGood < nRep
+                    %Name every distinct failure, not just the first -- the
+                    %mode of failure is what points at the cause.
+                    other = unique({col(~strcmp({col.decision},'good photodiode')).decision});
+                    for iterF = 1:numel(other)
+                        L{end+1} = sprintf('     also: %s',other{iterF}); %#ok<AGROW>
+                    end
+                end
+                pst = [col.photoSignalTest];
+                L{end+1} = sprintf('     photoSignalTest %.2f-%.2f vs threshold %d',...
+                    min(pst),max(pst),col(1).threshold); %#ok<AGROW>
+                L{end+1} = sprintf('     peaks %s of whiteCt %g   spacing spread %s',...
+                    fmtIntRange([col.nPeaks]),col(1).whiteCt,...
+                    fmtIntRange([col.rangeDiffPeaks])); %#ok<AGROW>
             end
             if latched.whiteCtEstimated
                 L{end+1} = '     (whiteCt estimated from duration, not reported by the stim PC)';
@@ -1112,6 +1203,32 @@ try
     end
 catch
     cfg.pezName = sprintf('rig%d',compRef);
+end
+
+end
+
+function m = nanmedianLocal(x)
+%nanmedianLocal median ignoring NaN, without needing the Statistics Toolbox's
+%nanmedian (which is deprecated) or newer median(...,'omitnan').
+
+x = x(~isnan(x));
+if isempty(x)
+    m = NaN;
+else
+    m = median(x);
+end
+
+end
+
+function r = localRange(x)
+%localRange max-min ignoring NaN.  Reported alongside each median so a
+%measurement that varies wildly between repeats is visible as such.
+
+x = x(~isnan(x));
+if numel(x) < 2
+    r = NaN;
+else
+    r = max(x)-min(x);
 end
 
 end
@@ -1323,10 +1440,34 @@ L = struct('dcDark',NaN,'dcWhite',NaN,'dcSwing',NaN,'acPkPk',NaN,...
     'whiteCtEstimated',false,'missedFrames',NaN,'stimFile','',...
     'stimDurationMs',NaN,'leadInSec',NaN,'fcAttenSaturated',false,...
     'whiteClipped',false,'whiteRailFrac',NaN,'whiteDaqClipFrac',NaN,...
+    'repeatTraces',{{}},'repeatWhiteCts',[],'nRepeats',0,'acPkPkSpread',NaN,...
+    'riseSpread',NaN,...
     'cycleTemplate',[],'cycleTime',[],'cycleLo',NaN,...
     'cycleHi',NaN,'darkTrace',[],'whiteTrace',[],'flickerTrace',[],...
     'verdict',[],'verdictError','');
 
+end
+
+function s = fmtSpread(v,unit)
+%fmtSpread Show the across-repeat spread next to a median, or nothing when
+%there is only one repeat to compare.
+
+if isnan(v)
+    s = '';
+else
+    s = sprintf(' (spread %.3f %s)',v,unit);
+end
+end
+
+function s = fmtIntRange(v)
+v = v(~isnan(v));
+if isempty(v)
+    s = '--';
+elseif min(v) == max(v)
+    s = sprintf('%g',v(1));
+else
+    s = sprintf('%g-%g',min(v),max(v));
+end
 end
 
 function s = fmtV(v)

@@ -92,7 +92,19 @@ pdLiveMonitor
 6. Go/no-go on the verdict being `'good photodiode'` under **both** variants with margin.
 7. **Reload the GUI's stimulus** before resuming experiments (see caveat 3).
 
-### Reading the result
+#### Repeats
+
+One **Flicker** press presents the stimulus three times back to back (`'Repeats',N` to
+change it). Each repeat is captured separately with its own dark lead-in, because
+`pdVerdict`'s baseline is the median of the first 300 frames and needs real dark there.
+
+Reported metrics are **medians** across repeats, with the spread shown beside them, and
+the verdict line reads `good photodiode 2 of 3` rather than collapsing to one answer. A
+large spread means the measurement isn't trustworthy however good the median looks — and
+a mixed verdict usually points at something intermittent (dropped projector flips, stray
+light) rather than the sensor.
+
+## Reading the result
 
 - both `fc` estimates agree and are low (≲120 Hz) → **bandwidth-limited**
 - `fc` fine but `dcSwing` small vs the working rig → **light level / responsivity**
