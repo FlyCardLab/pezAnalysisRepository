@@ -44,7 +44,7 @@ amplitude is still enormous. Amplitude is rarely the binding constraint; **edge 
 
 ---
 
-## White/Dark and Flicker need different inits
+## You cannot do both halves in one session
 
 The listener keeps two pieces of state, and each command needs a different one:
 
@@ -53,22 +53,25 @@ The listener keeps two pieces of state, and each command needs a different one:
 | command 0, `'transforming'` | `stimStruct` (warpmap, warpoperator, stimRefROI) | 3/4 → **Flicker** |
 | command 5, `'standard'` | `stimTrigStruct` (gainMatrix, window) | 9/10 → **White / Dark** |
 
-Each init opens its own Psychtoolbox window, and opening a window invalidates every
-texture and proxy handle from the previous one. Switching without clearing up is what
-produces `'transformProxyPtr' argument must be a handle to a proxy object` and a console
-full of `Invalid Window (or Texture) Index`.
+They are mutually destructive. Each opens its own Psychtoolbox window, and opening a
+window invalidates every texture and proxy handle from the previous one. Send a 5 after a
+0 and `stimStruct.warpoperator` is left dangling, so Flicker dies with
+`'transformProxyPtr' argument must be a handle to a proxy object`, returns a partial
+struct, and everything afterwards fails with `Invalid Window (or Texture) Index`.
 
-**All the buttons work.** Pressing one that needs the other mode first sends command 86
-(`sca` + `PsychStartup`) to tear the stimulus computer down cleanly, then re-inits. That
-takes a few seconds and the projector blanks and comes back — expected, not a fault.
+So `pdLiveMonitor` greys out whatever the current mode cannot drive, and the buttons that
+remain are safe to press. To do the other half: **Reset stim** (command 86), close the
+window, and restart with the other `'InitMode'`.
 
-Group presses by mode to avoid the wait: all the White/Dark work, then all the Flicker
-work. `'InitMode'` sets which one you start in, so you skip one switch.
+**For the bandwidth question you only need the default `'transforming'` mode.** Rise time
+and fc-from-rise come from the flicker's own cycle average and never touch White/Dark.
+`'standard'` is only needed for the DC swing, which feeds `acPkPk/dcSwing` and
+fc-from-attenuation.
 
-For the bandwidth question you only need Flicker — rise time and fc-from-rise come from
-the flicker's own cycle average and never touch White/Dark.
+If the stimulus computer's console is already full of `Invalid Window (or Texture) Index`,
+it is in this mangled state — reset it before trusting anything.
 
-## Run order## Run order
+## Run order
 
 ```matlab
 pdSelfTest                      % offline sanity check, no hardware
@@ -91,13 +94,11 @@ pdLiveMonitor
 
 #### Repeats
 
-One **Flicker** press presents the stimulus once by default. Raise it with
-`'Repeats',N` only once the stimulus computer is presenting reliably — repeated
-back-to-back presentations are a good way to expose intermittent faults, but a bad way to
-work when presentation itself is the thing failing. Each repeat is captured separately with its own dark lead-in, because
+One **Flicker** press presents the stimulus three times back to back (`'Repeats',N` to
+change it). Each repeat is captured separately with its own dark lead-in, because
 `pdVerdict`'s baseline is the median of the first 300 frames and needs real dark there.
 
-With more than one repeat, reported metrics are **medians** across them, with the spread shown beside them, and
+Reported metrics are **medians** across repeats, with the spread shown beside them, and
 the verdict line reads `good photodiode 2 of 3` rather than collapsing to one answer. A
 large spread means the measurement isn't trustworthy however good the median looks — and
 a mixed verdict usually points at something intermittent (dropped projector flips, stray
@@ -140,29 +141,6 @@ about the sensor.**
    before running real experiments. `pdLiveMonitor` prints a reminder on exit.
 
 ---
-
-## When the stimulus computer misbehaves
-
-Its console is the only place the real error appears — the listener catches every
-exception and replies a bare `"error"` over UDP. Read it there first.
-
-**`Unrecognized function or variable 'screenid'`** in
-`initializeVisualStimulusGeneralUDP_brighter` means the projector is not being seen as a
-second display. That function loops over `Screen('Screens')` looking for one 1024 or 1280
-px wide, and only assigns `screenid` if it finds one. If the console also printed
-`screenidList = 0`, PTB can see a single screen — the control monitor — and never assigns
-it. **This is a display problem, not a software one:** check the projector is powered and
-awake, and that Windows is *extending* the desktop rather than duplicating or showing on
-one display only. Nothing in this folder can work around it.
-
-**`Dot indexing is not supported`** at `fullOffIm = uint8(stimTrigStruct.gainMatrix.*0)`
-means a full-field command (9/10) was sent under a transforming init, where
-`stimTrigStruct` has no `gainMatrix`. `pdLiveMonitor` no longer does this.
-
-**`'transformProxyPtr' argument must be a handle to a proxy object`**, or a stream of
-`Invalid Window (or Texture) Index`, means the two init modes have been mixed and the
-window/texture handles are stale. Press **Reset stim** (command 86) and start again in
-one mode.
 
 ## Gotchas that cost real time
 
