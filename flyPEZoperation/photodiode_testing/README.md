@@ -144,6 +144,29 @@ about the sensor.**
 
 ---
 
+## When the stimulus computer misbehaves
+
+Its console is the only place the real error appears — the listener catches every
+exception and replies a bare `"error"` over UDP. Read it there first.
+
+**`Unrecognized function or variable 'screenid'`** in
+`initializeVisualStimulusGeneralUDP_brighter` means the projector is not being seen as a
+second display. That function loops over `Screen('Screens')` looking for one 1024 or 1280
+px wide, and only assigns `screenid` if it finds one. If the console also printed
+`screenidList = 0`, PTB can see a single screen — the control monitor — and never assigns
+it. **This is a display problem, not a software one:** check the projector is powered and
+awake, and that Windows is *extending* the desktop rather than duplicating or showing on
+one display only. Nothing in this folder can work around it.
+
+**`Dot indexing is not supported`** at `fullOffIm = uint8(stimTrigStruct.gainMatrix.*0)`
+means a full-field command (9/10) was sent under a transforming init, where
+`stimTrigStruct` has no `gainMatrix`. `pdLiveMonitor` no longer does this.
+
+**`'transformProxyPtr' argument must be a handle to a proxy object`**, or a stream of
+`Invalid Window (or Texture) Index`, means the two init modes have been mixed and the
+window/texture handles are stale. Press **Reset stim** (command 86) and start again in
+one mode.
+
 ## Gotchas that cost real time
 
 **The capture must start before the stimulus.** `pdVerdict`'s v13 baseline is
