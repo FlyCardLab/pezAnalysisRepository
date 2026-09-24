@@ -22,8 +22,9 @@ function pdLiveMonitor(varargin)
 %               presenting reliably; each repeat is captured separately with
 %               its own dark lead-in and the metrics become medians across
 %               them, with the spread shown.
-%   'InitMode'  'transforming' (default) or 'standard'.  Picks which half
-%               of the measurement this session can do -- see below.
+%   'InitMode'  which init to start in, 'transforming' (default, for
+%               Flicker) or 'standard' (for White/Dark).  Only sets the
+%               starting mode; buttons switch it as needed -- see below.
 %   'SensorRail' voltage the sensor saturates at, default 5 (its supply).
 %               Only used to label clipping in the readout, never to alter
 %               the data.
@@ -56,24 +57,28 @@ function pdLiveMonitor(varargin)
 %   fc fine but dcSwing small vs a working rig      -> LIGHT LEVEL / RESPONSIVITY
 %   single channel fine but the mux test much worse -> ACQUISITION CHAIN
 %
-%YOU CANNOT DO BOTH HALVES IN ONE SESSION.  The listener keeps two pieces
-%of state and each command needs a different one:
+%WHITE/DARK AND FLICKER NEED DIFFERENT INITS, AND SWITCHING COSTS A RESET.
+%The listener keeps two pieces of state and each command needs a different
+%one:
 %   command 0 ("transforming") -> stimStruct,     needed by 3/4 = Flicker
 %   command 5 ("standard")     -> stimTrigStruct, needed by 9/10 = White/Dark
-%They are mutually destructive: each opens its own Psychtoolbox window, and
-%opening a window invalidates every texture and proxy handle from the
-%previous one.  Send a 5 after a 0 and stimStruct.warpoperator is left
-%dangling, so Flicker dies with "'transformProxyPtr' argument must be a
-%handle to a proxy object", returns a partial struct, and everything after
-%it fails with "Invalid Window (or Texture) Index".
+%Each init opens its own Psychtoolbox window, and opening a window
+%invalidates every texture and proxy handle from the previous one.  Switch
+%without clearing up and Flicker dies with "'transformProxyPtr' argument
+%must be a handle to a proxy object" and the console fills with "Invalid
+%Window (or Texture) Index".
 %
-%So the buttons this session cannot drive are greyed out, and the sequence
-%is: run one mode, then Reset stim (86) and restart in the other.
+%So every button works, but pressing one that needs the other mode first
+%sends command 86 (sca + PsychStartup) to tear the stimulus computer down
+%cleanly, then re-inits.  That takes a few seconds and the projector will
+%blank and come back -- expected, not a fault.  Group your presses by mode
+%if you want to avoid the wait: all the White/Dark work, then all the
+%Flicker work.
 %
-%For the bandwidth question you only need the default 'transforming' mode.
-%Rise time and fc-from-rise come from the flicker's own cycle average and
-%do not need White/Dark at all.  'standard' is only for the DC swing, which
-%feeds acPkPk/dcSwing and fc-from-attenuation.
+%For the bandwidth question you only need Flicker.  Rise time and
+%fc-from-rise come from the flicker's own cycle average and never touch
+%White/Dark, which only supply the DC swing for acPkPk/dcSwing and
+%fc-from-attenuation.
 %
 %THE 5 V RAIL.  A phototransistor module run off 5 V saturates at its
 %supply, and a full-screen white frame is far brighter than the 35x35 px
@@ -415,13 +420,6 @@ cleanupAll();
         mkButton(0.560,btnY,btnW,'Snapshot',@(~,~) doSnapshot(),'local');
         mkButton(0.660,btnY,btnW,'Clear nums',@(~,~) resetLatched(),'local');
 
-        %Grey out whatever this session's init mode cannot drive, rather than
-        %letting a press corrupt the stimulus computer's window state.
-        if strcmp(opt.InitMode,'transforming')
-            set(findobj(hFig,'Tag','standard'),'Enable','off')
-        else
-            set(findobj(hFig,'Tag','transforming'),'Enable','off')
-        end
 
         hStatus = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
             'Position',[0.755 btnY-0.004 0.20 0.030],'HorizontalAlignment','right',...
@@ -491,12 +489,6 @@ cleanupAll();
         if strcmp(state,'off')
             return
         end
-        %Re-enabling must not resurrect buttons this session cannot use.
-        if strcmp(opt.InitMode,'transforming')
-            set(findobj(hFig,'Tag','standard'),'Enable','off')
-        else
-            set(findobj(hFig,'Tag','transforming'),'Enable','off')
-        end
         if ~useUDP
             set(findobj(hFig,'Tag','udp'),'Enable','off')
             set(findobj(hFig,'Tag','standard'),'Enable','off')
@@ -522,18 +514,20 @@ cleanupAll();
         %
         %Hence: pick a mode, do that half of the measurement, and restart with
         %a reset in between if you need the other half.
-        if ~strcmp(mode,opt.InitMode)
-            error('pdLiveMonitor:wrongInitMode',...
-                ['This action needs the "%s" init but the session was started '...
-                'in "%s".\n\nThey cannot coexist: each opens its own PTB '...
-                'window and invalidates the other''s texture handles.\n\n'...
-                'Close this window, press Reset on the stimulus computer (or '...
-                'send command 86), then run:\n'...
-                '    pdLiveMonitor(''InitMode'',''%s'')'],...
-                mode,opt.InitMode,mode)
-        end
         if strcmp(stimInitMode,mode)
             return
+        end
+        %Switching modes is safe ONLY through a full reset.  Each init opens
+        %its own PTB window, and opening one invalidates every texture and
+        %proxy handle from the previous -- that is what produced the
+        %'transformProxyPtr' and 'Invalid Window (or Texture) Index' storms.
+        %Command 86 is sca + PsychStartup, which tears the whole lot down so
+        %the next init starts clean.  Costs a few seconds; worth it.
+        if ~strcmp(stimInitMode,'none')
+            status('switching mode: resetting stimulus computer...')
+            sendUDP(86);
+            pause(4)
+            stimInitMode = 'none';
         end
         switch mode
             case 'standard'
