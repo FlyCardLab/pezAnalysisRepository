@@ -957,8 +957,23 @@ stagePos = 0;
 roiSwell = 15;
 roiStep = 12;% manual ROI resize step, one fly-detect grid spacing
 set(hAxesA,'nextplot','add','YDir','reverse')
+% ROI body hit-area (near-invisible so clicks anywhere inside the box can
+% grab it to relocate the whole ROI), created first so it stays behind
+% hPlotROI/hROICorners in the stacking order (corner grabs must not be
+% masked by the body's hit-test area).
+hROIBody = patch('Parent',hAxesA,'XData',nan(1,4),'YData',nan(1,4),...
+    'FaceColor',[1 1 1],'FaceAlpha',0.001,'EdgeColor','none',...
+    'HitTest','on','ButtonDownFcn',@startDragROIBody,'Visible','off');
 hPlotROI = plot(0,0,'Marker','.','Color',[0 0 0.8],...
     'Parent',hAxesA,'LineStyle','none');
+hROICorners = plot(nan(1,4),nan(1,4),'Marker','s','MarkerSize',8,...
+    'MarkerFaceColor',[1 1 0],'MarkerEdgeColor',[0 0 0],...
+    'LineStyle','none','Parent',hAxesA,'HitTest','on',...
+    'ButtonDownFcn',@startDragROICorner,'Visible','off');
+roiDragMode = '';
+roiDragCornerNdx = [];
+roiDragAnchorPoint = [];
+roiDragAnchorPos = [];
 hPlotPre = plot(0,0,'Parent',hAxesA,'LineStyle','none','visible','off');
 hPlotPost = plot(0,0,'Parent',hAxesA,'LineStyle','none','visible','off');
 set(hPlotPost,'Marker','o','MarkerFaceColor',[1 1 0],...
@@ -1780,6 +1795,11 @@ disp('camStartupFun passed')
             repmat(lrgDims(1),1,numel(xOpsVec)),yOpsVec]+roiPos(2);
         set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
             'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
+        % corner order: top-left, top-right, bottom-right, bottom-left
+        cornerX = roiPos([1 3 3 1]);
+        cornerY = roiPos([2 2 4 4]);
+        set(hROICorners,'XData',cornerX,'YData',cornerY)
+        set(hROIBody,'XData',cornerX,'YData',cornerY)
     end
     function hDispROICall(~,~)
         if isempty(roiPos)
@@ -1791,9 +1811,13 @@ disp('camStartupFun passed')
         switch dispVal
             case 0
                 set(hPlotROI,'Visible','off')
+                set(hROICorners,'Visible','off')
+                set(hROIBody,'Visible','off')
             case 1
                 set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
                     'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
+                set(hROICorners,'Visible','on')
+                set(hROIBody,'Visible','on')
         end
     end
     function highlightBackground(~,~)
@@ -2509,6 +2533,88 @@ function hManualSetROIdecrease(~,~)
     roiPos(4) = roiPos(4)-roiStep;
     refreshROIderived
 end
+% Mouse-drag ROI editing: drag a yellow corner square to resize, or drag
+% anywhere inside the ROI to relocate the whole box. Both reuse roiPos /
+% refreshROIderived, so they stay in sync with the auto-detect and
+% arrow/step-button workflows above.
+    function startDragROICorner(~,~)
+        if numel(xROI)==1
+            warning('first set autoROI')
+            return
+        end
+        cp = get(hAxesA,'CurrentPoint');
+        clickPt = cp(1,1:2);
+        cornerX = roiPos([1 3 3 1]);
+        cornerY = roiPos([2 2 4 4]);
+        distSq = (cornerX-clickPt(1)).^2+(cornerY-clickPt(2)).^2;
+        [~,roiDragCornerNdx] = min(distSq);
+        roiDragMode = 'corner';
+        set(hFigA,'WindowButtonMotionFcn',@dragROICorner,'WindowButtonUpFcn',@stopDragROI)
+    end
+    function dragROICorner(~,~)
+        xIdxByCorner = [1 3 3 1];
+        yIdxByCorner = [2 2 4 4];
+        oppXIdxByCorner = [3 1 1 3];
+        oppYIdxByCorner = [4 4 2 2];
+        xIdx = xIdxByCorner(roiDragCornerNdx);
+        yIdx = yIdxByCorner(roiDragCornerNdx);
+        oppX = roiPos(oppXIdxByCorner(roiDragCornerNdx));
+        oppY = roiPos(oppYIdxByCorner(roiDragCornerNdx));
+        minDim = ceil((2*tmplLeg+1)/dwnFac);
+        cp = get(hAxesA,'CurrentPoint');
+        newX = min(max(cp(1,1),1),double(nCam.nWidth));
+        newY = min(max(cp(1,2),1),double(nCam.nHeight));
+        if xIdx == 1
+            newX = min(newX,oppX-minDim);
+        else
+            newX = max(newX,oppX+minDim);
+        end
+        if yIdx == 2
+            newY = min(newY,oppY-minDim);
+        else
+            newY = max(newY,oppY+minDim);
+        end
+        roiPos(xIdx) = newX;
+        roiPos(yIdx) = newY;
+        refreshROIderived
+    end
+    function startDragROIBody(~,~)
+        if numel(xROI)==1
+            warning('first set autoROI')
+            return
+        end
+        cp = get(hAxesA,'CurrentPoint');
+        roiDragAnchorPoint = cp(1,1:2);
+        roiDragAnchorPos = roiPos;
+        roiDragMode = 'body';
+        set(hFigA,'WindowButtonMotionFcn',@dragROIBody,'WindowButtonUpFcn',@stopDragROI)
+    end
+    function dragROIBody(~,~)
+        cp = get(hAxesA,'CurrentPoint');
+        deltaX = cp(1,1)-roiDragAnchorPoint(1);
+        deltaY = cp(1,2)-roiDragAnchorPoint(2);
+        newPos = roiDragAnchorPos+[deltaX deltaY deltaX deltaY];
+        boxW = roiDragAnchorPos(3)-roiDragAnchorPos(1);
+        boxH = roiDragAnchorPos(4)-roiDragAnchorPos(2);
+        if newPos(1) < 1
+            newPos([1 3]) = [1,1+boxW];
+        end
+        if newPos(3) > double(nCam.nWidth)
+            newPos([1 3]) = [double(nCam.nWidth)-boxW,double(nCam.nWidth)];
+        end
+        if newPos(2) < 1
+            newPos([2 4]) = [1,1+boxH];
+        end
+        if newPos(4) > double(nCam.nHeight)
+            newPos([2 4]) = [double(nCam.nHeight)-boxH,double(nCam.nHeight)];
+        end
+        roiPos = newPos;
+        refreshROIderived
+    end
+    function stopDragROI(~,~)
+        set(hFigA,'WindowButtonMotionFcn',[],'WindowButtonUpFcn',[])
+        roiDragMode = '';
+    end
 
 
 %% Camera control functions
