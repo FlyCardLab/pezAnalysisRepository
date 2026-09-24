@@ -17,6 +17,14 @@ function pdLiveMonitor(varargin)
 %   'Range'     explicit [lo hi] in volts, default [-10 10].  Deliberately
 %               wide: see "THE 5 V RAIL" below.  Pass 'auto' to probe and
 %               pick the narrowest fitting range instead.
+%   'Repeats'   how many back-to-back presentations per Flicker press,
+%               default 1.  Raise it only if the stimulus computer is
+%               presenting reliably; each repeat is captured separately with
+%               its own dark lead-in and the metrics become medians across
+%               them, with the spread shown.
+%   'InitMode'  which init to start in, 'transforming' (default, for
+%               Flicker) or 'standard' (for White/Dark).  Only sets the
+%               starting mode; buttons switch it as needed -- see below.
 %   'SensorRail' voltage the sensor saturates at, default 5 (its supply).
 %               Only used to label clipping in the readout, never to alter
 %               the data.
@@ -41,11 +49,36 @@ function pdLiveMonitor(varargin)
 %the optical signal is a 50% duty square wave at 180 Hz, 2.78 ms per state,
 %swinging between levels 255 and 10 (never fully dark).
 %
-%READING THE NUMBERS.  Press White then Dark to latch the DC swing, then
-%Flicker to latch the AC numbers.  Then:
+%READING THE NUMBERS.  In 'transforming' mode press Init then Flicker; the
+%cycle-average plot and fc-from-rise answer the bandwidth question on their
+%own.  In 'standard' mode press Init, White, then Dark to latch the DC
+%swing.  With both halves in hand:
 %   both fc estimates agree and are low (<~500 Hz) -> BANDWIDTH LIMITED
 %   fc fine but dcSwing small vs a working rig      -> LIGHT LEVEL / RESPONSIVITY
 %   single channel fine but the mux test much worse -> ACQUISITION CHAIN
+%
+%WHITE/DARK AND FLICKER NEED DIFFERENT INITS, AND SWITCHING COSTS A RESET.
+%The listener keeps two pieces of state and each command needs a different
+%one:
+%   command 0 ("transforming") -> stimStruct,     needed by 3/4 = Flicker
+%   command 5 ("standard")     -> stimTrigStruct, needed by 9/10 = White/Dark
+%Each init opens its own Psychtoolbox window, and opening a window
+%invalidates every texture and proxy handle from the previous one.  Switch
+%without clearing up and Flicker dies with "'transformProxyPtr' argument
+%must be a handle to a proxy object" and the console fills with "Invalid
+%Window (or Texture) Index".
+%
+%So every button works, but pressing one that needs the other mode first
+%sends command 86 (sca + PsychStartup) to tear the stimulus computer down
+%cleanly, then re-inits.  That takes a few seconds and the projector will
+%blank and come back -- expected, not a fault.  Group your presses by mode
+%if you want to avoid the wait: all the White/Dark work, then all the
+%Flicker work.
+%
+%For the bandwidth question you only need Flicker.  Rise time and
+%fc-from-rise come from the flicker's own cycle average and never touch
+%White/Dark, which only supply the DC swing for acPkPk/dcSwing and
+%fc-from-attenuation.
 %
 %THE 5 V RAIL.  A phototransistor module run off 5 V saturates at its
 %supply, and a full-screen white frame is far brighter than the 35x35 px
@@ -88,6 +121,8 @@ addParameter(p,'Rate',50000);
 addParameter(p,'Channels',{'ai0'});
 addParameter(p,'Range',[-10 10]);
 addParameter(p,'SensorRail',5);
+addParameter(p,'InitMode','transforming');
+addParameter(p,'Repeats',1);
 addParameter(p,'FlickerHz',180);
 addParameter(p,'Window',0.5);
 addParameter(p,'CamRate',6000);
@@ -130,6 +165,7 @@ capFilled = 0;
 capTarget = 0;
 capturing = false;
 latched = emptyLatched();
+stimInitMode = 'none';
 stopFlag = false;
 hFig = [];
 hTrace = [];
@@ -209,7 +245,8 @@ cleanupAll();
         if ischar(wanted) && strcmpi(wanted,'auto')
             %Probe with the projector at full white.  Auto-ranging on a dark
             %trace picks a range that the white condition then clips.
-            if useUDP
+            if useUDP && strcmp(opt.InitMode,'standard')
+                ensureStimInit('standard');
                 sendUDP(9);
                 pause(0.3)
             end
@@ -342,7 +379,8 @@ cleanupAll();
     end
 
     function buildFigure()
-        hFig = figure('Name',sprintf('pdLiveMonitor - %s (%s)',cfg.pezName,cfg.devID),...
+        hFig = figure('Name',sprintf('pdLiveMonitor - %s (%s) - %s init',...
+            cfg.pezName,cfg.devID,opt.InitMode),...
             'NumberTitle','off','Position',[80 80 1150 760],'Color',[1 1 1],...
             'CloseRequestFcn',@(~,~) requestStop());
 
@@ -364,18 +402,24 @@ cleanupAll();
         title(axCycle,sprintf('Cycle average @ %g Hz (press Flicker)',opt.FlickerHz))
         grid(axCycle,'on')
 
-        hText = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
+        %A 'text' uicontrol clips silently -- anything past the bottom of the
+        %box cannot be reached at all.  A listbox scrolls.  Min/Max and an
+        %empty Value make it read-only in effect (nothing stays selected).
+        hText = uicontrol('Parent',hFig,'Style','listbox','Units','normalized',...
             'Position',[0.44 0.07 0.52 0.44],'HorizontalAlignment','left',...
-            'BackgroundColor',[1 1 1],'FontName','Courier New','FontSize',9);
+            'BackgroundColor',[1 1 1],'FontName','Courier New','FontSize',9,...
+            'Min',0,'Max',2,'Value',[],'String',{''});
 
-        btnW = 0.105;
+        btnW = 0.092;
         btnY = 0.955;
-        mkButton(0.06,btnY,btnW,'Init (5)',@(~,~) guardedUDP(@() doInit()),'udp');
-        mkButton(0.175,btnY,btnW,'Dark (10)',@(~,~) guardedUDP(@() doDC(10,'dark')),'udp');
-        mkButton(0.29,btnY,btnW,'White (9)',@(~,~) guardedUDP(@() doDC(9,'white')),'udp');
-        mkButton(0.405,btnY,btnW,'Flicker',@(~,~) guardedUDP(@() doFlicker()),'udp');
-        mkButton(0.52,btnY,btnW,'Snapshot',@(~,~) doSnapshot(),'local');
-        mkButton(0.635,btnY,btnW,'Reset numbers',@(~,~) resetLatched(),'local');
+        mkButton(0.06,btnY,btnW,'Init',@(~,~) guardedUDP(@() doInit()),'udp');
+        mkButton(0.160,btnY,btnW,'Dark (10)',@(~,~) guardedUDP(@() doDC(10,'dark')),'standard');
+        mkButton(0.260,btnY,btnW,'White (9)',@(~,~) guardedUDP(@() doDC(9,'white')),'standard');
+        mkButton(0.360,btnY,btnW,'Flicker',@(~,~) guardedUDP(@() doFlicker()),'transforming');
+        mkButton(0.460,btnY,btnW,'Reset stim',@(~,~) guardedUDP(@() doReset()),'udp');
+        mkButton(0.560,btnY,btnW,'Snapshot',@(~,~) doSnapshot(),'local');
+        mkButton(0.660,btnY,btnW,'Clear nums',@(~,~) resetLatched(),'local');
+
 
         hStatus = uicontrol('Parent',hFig,'Style','text','Units','normalized',...
             'Position',[0.755 btnY-0.004 0.20 0.030],'HorizontalAlignment','right',...
@@ -383,6 +427,8 @@ cleanupAll();
 
         if ~useUDP
             set(findobj(hFig,'Tag','udp'),'Enable','off')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
         end
     end
 
@@ -440,26 +486,117 @@ cleanupAll();
             return
         end
         set(findobj(hFig,'Style','pushbutton'),'Enable',state)
+        if strcmp(state,'off')
+            return
+        end
         if ~useUDP
             set(findobj(hFig,'Tag','udp'),'Enable','off')
+            set(findobj(hFig,'Tag','standard'),'Enable','off')
+            set(findobj(hFig,'Tag','transforming'),'Enable','off')
         end
+    end
+
+    function ensureStimInit(mode)
+        %ONE init mode per session, chosen by 'InitMode'.  Never switch.
+        %
+        %The listener holds two separate pieces of state:
+        %   command 0 -> stimStruct     (warpmap, warpoperator, stimRefROI)
+        %                needed by 3/4, the file-based stimuli
+        %   command 5 -> stimTrigStruct (gainMatrix, window)
+        %                needed by 9/10, the full-field frames
+        %
+        %They are not merely different, they destroy each other.  Each opens
+        %its own Psychtoolbox window, and opening a window invalidates every
+        %texture and proxy handle from the previous one.  So a 5 after a 0
+        %leaves stimStruct.warpoperator dangling, and command 3 then dies with
+        %"'transformProxyPtr' argument must be a handle to a proxy object",
+        %returns a partial struct, and everything after it fails too.
+        %
+        %Hence: pick a mode, do that half of the measurement, and restart with
+        %a reset in between if you need the other half.
+        if strcmp(stimInitMode,mode)
+            return
+        end
+        %Switching modes is safe ONLY through a full reset.  Each init opens
+        %its own PTB window, and opening one invalidates every texture and
+        %proxy handle from the previous -- that is what produced the
+        %'transformProxyPtr' and 'Invalid Window (or Texture) Index' storms.
+        %Command 86 is sca + PsychStartup, which tears the whole lot down so
+        %the next init starts clean.  Costs a few seconds; worth it.
+        if ~strcmp(stimInitMode,'none')
+            status('switching mode: resetting stimulus computer...')
+            sendUDP(86);
+            pause(4)
+            stimInitMode = 'none';
+        end
+        switch mode
+            case 'standard'
+                code = 5;%full-field frames: 9, 10
+            case 'transforming'
+                code = 0;%file-based stimuli: 3 then 4
+            otherwise
+                error('pdLiveMonitor:badInitMode',...
+                    'InitMode must be ''transforming'' or ''standard''.')
+        end
+        status(sprintf('initialising stimulus computer (%d)...',code))
+        stimInitMode = 'none';
+        sendUDP(code);
+        reply = recvUDP(25000);
+        if isempty(reply)
+            error('pdLiveMonitor:initNoReply',...
+                ['No reply to command %d after 25 s.  Is '...
+                'udpInitializationListener_v2 running on %s?'],code,cfg.hostIP)
+        end
+        if strcmpi(reply,'error')
+            error('pdLiveMonitor:initFailed',...
+                ['Stimulus computer could not complete command %d.  It only '...
+                'ever replies a bare "error"; THE REAL EXCEPTION IS PRINTED '...
+                'ON ITS OWN COMMAND WINDOW -- look there.\n\nIf it says '...
+                '"Unrecognized function or variable ''screenid''", the '...
+                'projector is not being seen as a second display: '...
+                'Screen(''Screens'') is returning one screen, so '...
+                'initializeVisualStimulusGeneralUDP_brighter never finds a '...
+                '1024- or 1280-wide one to draw on.  That is a display '...
+                'problem on the stimulus computer, not something this tool '...
+                'can fix -- check the projector is powered and that Windows '...
+                'is extending rather than duplicating.'],code)
+        end
+        stimInitMode = mode;
+    end
+
+    function goDark()
+        %Command 10 needs stimTrigStruct.gainMatrix, which only a standard
+        %init creates.  Sending it under a transforming init throws "Dot
+        %indexing is not supported" on the stimulus computer.
+        %
+        %Not sending it is fine: the sensor watches the 35x35 px reference
+        %patch, not the dome, and that patch is already black at idle
+        %(stimRefImageB in initializeFramesFromFileUDP).  So the lead-in is
+        %dark where it matters either way.
+        if strcmp(stimInitMode,'standard')
+            sendUDP(10);
+        end
+    end
+
+    function doReset()
+        %Command 86 is sca + PsychStartup on the stimulus computer.  This is
+        %the way out of a mangled window/texture state, and the log fills with
+        %"Invalid Window (or Texture) Index" when you are in one.
+        status('resetting stimulus computer...')
+        sendUDP(86);
+        pause(3)
+        stimInitMode = 'none';
+        status('stimulus computer reset -- press Init')
     end
 
     function doInit()
-        status('init...')
-        sendUDP(5);
-        reply = recvUDP(15000);
-        if isempty(reply)
-            error('pdLiveMonitor:noAck',...
-                ['No acknowledgement from the stimulus computer after 15 s. '...
-                'Either udpInitializationListener_v2 is not running there, or '...
-                '(less likely) the reply was dropped between polling windows '...
-                '-- press Init again to distinguish the two.'])
-        end
-        status(['init: ' reply])
+        stimInitMode = 'none';%force a fresh init, so this doubles as a comms check
+        ensureStimInit(opt.InitMode);
+        status(sprintf('stimulus computer ready (%s init)',opt.InitMode))
     end
 
     function doDC(code,which)
+        ensureStimInit('standard');%9 and 10 need stimTrigStruct.gainMatrix
         status([which '...'])
         sendUDP(code);
         pause(0.4)%let the projector settle before measuring
@@ -492,6 +629,7 @@ cleanupAll();
     end
 
     function doFlicker()
+        ensureStimInit('transforming');%3 and 4 need stimStruct
         stimFile = resolveStimFile();
         status('loading stimulus...')
         sendUDP([3 double(stimFile)]);
@@ -506,26 +644,73 @@ cleanupAll();
             else
                 error('pdLiveMonitor:badDuration',...
                     ['Stimulus computer returned "%s" instead of a duration '...
-                    'for %s.\n\nIt replies "error" when it cannot build the '...
-                    'stimulus -- usually because the file is too long or too '...
-                    'large to hold in memory, or was generated for a '...
-                    'different rig (check pez5 = 0). Try a short one: '...
-                    'initStimSize = 5, duration = 3000.'],reply,stimFile)
+                    'for %s.\n\nThe listener catches every exception and '...
+                    'replies a bare "error", so THE REAL CAUSE IS PRINTED ON '...
+                    'THE STIMULUS COMPUTER''S COMMAND WINDOW -- look there '...
+                    'first.\n\nCommon causes: the file was built for a '...
+                    'different rig (check pez5 = 0), or it is too large to '...
+                    'hold in memory.'],reply,stimFile)
             end
         end
         latched.stimFile = stimFile;
         latched.stimDurationMs = durMs;
 
-        %Start recording BEFORE triggering, so the capture has a genuine
-        %pre-stimulus dark lead-in.  pdVerdict's v13 baseline is
-        %median(first 300 camera frames); without a dark lead-in that lands
-        %halfway up the square wave and every score is meaningless.  200 ms
-        %is ~1200 frames at 6000 fps, comfortably more than the 300 needed.
-        leadSec = 0.2;
-        status('dark lead-in...')
-        sendUDP(10);
-        pause(0.3)%let the projector settle into black first
-        status(sprintf('presenting %.0f ms...',durMs))
+        %Load once, present Repeats times.  Each repeat is captured
+        %separately with its own dark lead-in rather than as one long
+        %recording, so every trace is independently valid for pdVerdict --
+        %its baseline is median(first 300 frames) and needs real dark there.
+        traces = cell(opt.Repeats,1);
+        whiteCts = nan(opt.Repeats,1);
+        missed = nan(opt.Repeats,1);
+        for iterR = 1:opt.Repeats
+            if ~ishandle(hFig)
+                break
+            end
+            status(sprintf('repeat %d of %d: dark lead-in...',iterR,opt.Repeats))
+            [d,wc,mf] = presentOnce(durMs);
+            traces{iterR} = d;
+            whiteCts(iterR) = wc;
+            missed(iterR) = mf;
+        end
+
+        keep = ~cellfun(@isempty,traces);
+        traces = traces(keep);
+        whiteCts = whiteCts(keep);
+        missed = missed(keep);
+        if isempty(traces)
+            status('no data captured')
+            return
+        end
+
+        latched.repeatTraces = traces;
+        latched.repeatWhiteCts = whiteCts;
+        latched.flickerTrace = traces{1};
+        latched.whiteCt = median(whiteCts(~isnan(whiteCts)));
+        if isempty(latched.whiteCt)
+            latched.whiteCt = NaN;
+        end
+        latched.missedFrames = max(missed);
+
+        %Analyse whatever was captured, even if something downstream fails --
+        %a populated panel from a partial capture beats an empty one.
+        try
+            analyseFlicker(traces);
+            status(sprintf('flicker latched (%d repeats)',numel(traces)))
+        catch ME
+            latched.verdictError = ME.message;
+            fprintf(2,'\npdLiveMonitor: flicker analysis failed:\n%s\n',...
+                getReport(ME,'extended','hyperlinks','off'));
+            status('captured, but analysis failed')
+        end
+    end
+
+    function [d,whiteCt,missedFrames] = presentOnce(durMs)
+        %One dark lead-in plus one presentation, captured as a single trace.
+        whiteCt = NaN;
+        missedFrames = NaN;
+        leadSec = 0.2;%~1200 camera frames at 6000 fps, well over the 300 needed
+        goDark();
+        pause(0.3)%let the projector settle before the lead-in
         capTarget = max(round((leadSec+durMs/1000+0.5)*info.actualRate),1);
         capBuf = zeros(capTarget,nCh);
         capFilled = 0;
@@ -549,52 +734,90 @@ cleanupAll();
         pause(0.2)
         capturing = false;
         d = capBuf(1:capFilled,:);
+        if ~isempty(d)
+            d = d(:,1);
+        end
 
         parts = strsplit(reply,';');
         if numel(parts) >= 2
-            latched.missedFrames = str2double(parts{1});
-            latched.whiteCt = str2double(parts{2});
-        elseif isempty(reply)
-            %Non-fatal: the trace is still good, we just have to estimate
-            %the expected pulse count instead of being told it.
-            status('no reply; whiteCt estimated')
-        end
-        if isempty(d)
-            status('no data captured')
-            return
-        end
-        latched.flickerTrace = d(:,1);
-        %Analyse whatever was captured, even if something downstream fails --
-        %a populated panel from a partial capture beats an empty one.
-        try
-            analyseFlicker(d(:,1));
-            status('flicker latched')
-        catch ME
-            latched.verdictError = ME.message;
-            fprintf(2,'\npdLiveMonitor: flicker analysis failed:\n%s\n',...
-                getReport(ME,'extended','hyperlinks','off'));
-            status('captured, but analysis failed')
+            missedFrames = str2double(parts{1});
+            whiteCt = str2double(parts{2});
         end
     end
 
-    function analyseFlicker(x)
+    function analyseFlicker(traces)
+        %traces is a cell array, one entry per repeat.  Every per-repeat
+        %metric is computed independently and then reduced with a median, so
+        %one bad presentation (a dropped frame, a stray light event) cannot
+        %drag the answer around the way averaging would.  The spread across
+        %repeats is kept too -- if it is large, the measurement is not
+        %trustworthy however good the median looks.
         Fs = info.actualRate;
-        %The AC metrics must see only the stimulus; the dark lead-in is
-        %there for pdVerdict's baseline and would dilute them.
         lead = latched.leadInSec;
         if isnan(lead)
             lead = 0;
         end
-        firstStim = min(round(lead*Fs)+1,numel(x));
-        xs = x(firstStim:end);
+        n = numel(traces);
+        latched.nRepeats = n;
 
-        latched.acPkPk = robustPkPk(xs,Fs,opt.FlickerHz);
-        [tpl,tplT] = cycleAverage(xs,Fs,opt.FlickerHz);
-        latched.cycleTemplate = tpl;
-        latched.cycleTime = tplT;
-        [latched.riseTime,latched.fallTime,lo,hi] = edgeTimes(tpl,tplT);
-        latched.cycleLo = lo;
-        latched.cycleHi = hi;
+        pk = nan(n,1);
+        rise = nan(n,1);
+        fall = nan(n,1);
+        tpls = [];
+        verdicts = [];
+        for iterT = 1:n
+            x = traces{iterT};
+            %AC metrics must see only the stimulus; the dark lead-in is there
+            %for pdVerdict's baseline and would dilute them.
+            firstStim = min(round(lead*Fs)+1,numel(x));
+            xs = x(firstStim:end);
+
+            pk(iterT) = robustPkPk(xs,Fs,opt.FlickerHz);
+            [tpl,tplT] = cycleAverage(xs,Fs,opt.FlickerHz);
+            if ~isempty(tpl)
+                if isempty(tpls)
+                    tpls = tpl(:);
+                    latched.cycleTime = tplT;
+                elseif numel(tpl) == size(tpls,1)
+                    tpls = [tpls,tpl(:)]; %#ok<AGROW>
+                end
+                [rise(iterT),fall(iterT)] = edgeTimes(tpl,tplT);
+            end
+
+            wc = latched.whiteCt;
+            if isnan(wc)
+                wc = numel(x)/Fs*opt.FlickerHz;
+                latched.whiteCtEstimated = true;
+            else
+                latched.whiteCtEstimated = false;
+            end
+            try
+                v = pdVerdict(x,Fs,opt.CamRate,wc,'Variant','both');
+                if isempty(verdicts)
+                    verdicts = v;
+                else
+                    verdicts(end+1,:) = v; %#ok<AGROW>
+                end
+            catch ME
+                latched.verdictError = ME.message;
+            end
+        end
+
+        latched.acPkPk = nanmedianLocal(pk);
+        latched.acPkPkSpread = localRange(pk);
+        latched.riseTime = nanmedianLocal(rise);
+        latched.riseSpread = localRange(rise);
+        latched.fallTime = nanmedianLocal(fall);
+        latched.verdict = verdicts;
+
+        %Median across repeats of the folded waveform, so the displayed
+        %template matches the numbers rather than being one arbitrary repeat.
+        if ~isempty(tpls)
+            latched.cycleTemplate = median(tpls,2);
+            [~,~,lo,hi] = edgeTimes(latched.cycleTemplate,latched.cycleTime);
+            latched.cycleLo = lo;
+            latched.cycleHi = hi;
+        end
 
         if ~isnan(latched.riseTime) && latched.riseTime > 0
             latched.fcFromRise = 0.35/latched.riseTime;
@@ -619,19 +842,6 @@ cleanupAll();
         end
         if ~isnan(latched.noiseFloor) && latched.noiseFloor > 0
             latched.snr = latched.acPkPk/latched.noiseFloor;
-        end
-
-        wc = latched.whiteCt;
-        if isnan(wc)
-            wc = numel(x)/Fs*opt.FlickerHz;
-            latched.whiteCtEstimated = true;
-        else
-            latched.whiteCtEstimated = false;
-        end
-        try
-            latched.verdict = pdVerdict(x,Fs,opt.CamRate,wc,'Variant','both');
-        catch ME
-            latched.verdictError = ME.message;
         end
     end
 
@@ -750,7 +960,13 @@ cleanupAll();
             set(axCycle,'XLim',xl)
         end
 
-        set(hText,'String',reportText(x))
+        %Preserve the scroll position: this redraws five times a second, and
+        %resetting ListboxTop each time would make the panel impossible to
+        %read anywhere but the top.
+        lines = reportText(x);
+        oldTop = get(hText,'ListboxTop');
+        set(hText,'String',lines,'Value',[])
+        set(hText,'ListboxTop',max(1,min(oldTop,numel(lines))))
         %Plain drawnow: 'limitrate' arrived in R2015a and the rig's MATLAB
         %is older, where it fails with "Unknown command option".  Because
         %refresh() runs from the 200 ms timer AND from guardedUDP, that one
@@ -758,9 +974,59 @@ cleanupAll();
         drawnow
     end
 
+    function L = bottomLine()
+        %The go/no-go, stated plainly.  Two independent questions: is the
+        %sensor physically fast enough, and would the rig's own gate accept
+        %the trace.  They can disagree -- a fast sensor can still fail the
+        %gate on peak timing -- so report both.
+        want = 120;%Hz, the corner frequency the rig's gate needs (pdSelfTest)
+        L = {};
+        L{end+1} = '===== CAN THIS SENSOR DO 120 Hz? =====';
+        if isnan(latched.fcFromRise)
+            L{end+1} = '  not measured yet -- press Flicker';
+        elseif latched.fcFromRise >= want
+            L{end+1} = sprintf('  YES.  fc %.0f Hz  (%.1fx the %d Hz needed)',...
+                latched.fcFromRise,latched.fcFromRise/want,want);
+            L{end+1} = sprintf('        rise %.3f ms, needs to be under 2.9 ms',...
+                latched.riseTime*1000);
+        else
+            L{end+1} = sprintf('  NO.  fc %.0f Hz, needs to be over %d Hz',...
+                latched.fcFromRise,want);
+            L{end+1} = sprintf('        rise %.3f ms, needs to be under 2.9 ms',...
+                latched.riseTime*1000);
+        end
+        if ~isnan(latched.riseSpread) && ~isnan(latched.riseTime) &&...
+                latched.riseTime > 0 && latched.riseSpread > 0.25*latched.riseTime
+            L{end+1} = '  CAUTION: rise time varies a lot between repeats --';
+            L{end+1} = '           treat the number above as unreliable.';
+        end
+
+        if isempty(latched.verdict)
+            L{end+1} = '  rig gate:  press Flicker to score a trace';
+        else
+            nRep = size(latched.verdict,1);
+            for iterCol = 1:size(latched.verdict,2)
+                col = latched.verdict(:,iterCol);
+                nGood = sum(strcmp({col.decision},'good photodiode'));
+                if nGood == nRep
+                    word = 'PASS';
+                else
+                    word = 'FAIL';
+                end
+                L{end+1} = sprintf('  rig gate:  %s  %s (%d of %d) - %s',...
+                    word,col(1).variant,nGood,nRep,col(1).decision); %#ok<AGROW>
+            end
+        end
+    end
+
     function lines = reportText(x)
         Fs = info.actualRate;
         L = {};
+        %The answer first.  The panel is taller than its box, so whatever
+        %matters most has to be readable without scrolling.
+        L = [L,bottomLine()];
+        L{end+1} = '';
+
         L{end+1} = sprintf('ACQUISITION   %d ch @ %.0f S/s/ch  (%.0f kS/s aggregate)',...
             nCh,Fs,Fs*nCh/1000);
         if isempty(info.actualRange)
@@ -799,7 +1065,11 @@ cleanupAll();
         L{end+1} = '';
 
         L{end+1} = 'BANDWIDTH';
-        L{end+1} = sprintf('  AC pk-pk     %s',fmtV(latched.acPkPk));
+        if latched.nRepeats > 0
+            L{end+1} = sprintf('  repeats      %d',latched.nRepeats);
+        end
+        L{end+1} = sprintf('  AC pk-pk     %s%s',fmtV(latched.acPkPk),...
+            fmtSpread(latched.acPkPkSpread,'V'));
         if latched.whiteClipped
             L{end+1} = '  acPkPk/dcSwing withheld -- White clipped (see above)';
         else
@@ -808,7 +1078,8 @@ cleanupAll();
         end
         L{end+1} = '     (ceiling is below 1 even for an ideal sensor: White drives';
         L{end+1} = '      all three sub-frames at 255, the flicker is 255<->10 at 50%)';
-        L{end+1} = sprintf('  rise 10-90   %s  [want <2.9 ms]',fmtMs(latched.riseTime));
+        L{end+1} = sprintf('  rise 10-90   %s%s  [want <2.9 ms]',...
+            fmtMs(latched.riseTime),fmtSpread(latched.riseSpread*1000,'ms'));
         L{end+1} = sprintf('  fall 90-10   %s',fmtMs(latched.fallTime));
         L{end+1} = sprintf('  fc from rise %s  [want >120 Hz]',fmtHz(latched.fcFromRise));
         if latched.whiteClipped
@@ -827,15 +1098,26 @@ cleanupAll();
         L{end+1} = sprintf('  noise floor  %s (median IQR, dark trace)',fmtV(latched.noiseFloor));
         L{end+1} = sprintf('  SNR          %s  [want >5]',fmtN(latched.snr));
         if ~isempty(latched.verdict)
-            for iterV = 1:numel(latched.verdict)
-                vv = latched.verdict(iterV);
-                L{end+1} = sprintf('  [%-11s] %s',vv.variant,vv.decision); %#ok<AGROW>
-                L{end+1} = sprintf('     photoSignalTest %.2f vs threshold %d (margin %+.2f)',...
-                    vv.photoSignalTest,vv.threshold,vv.marginToThreshold); %#ok<AGROW>
-                L{end+1} = sprintf('     avgBase %+.4f  avgPeak %+.4f  minRange %.5f',...
-                    vv.avgBase,vv.avgPeak,vv.minRange); %#ok<AGROW>
-                L{end+1} = sprintf('     peaks %d of whiteCt %g   peak-spacing spread %g',...
-                    vv.nPeaks,vv.whiteCt,vv.rangeDiffPeaks); %#ok<AGROW>
+            nRep = size(latched.verdict,1);
+            for iterCol = 1:size(latched.verdict,2)
+                col = latched.verdict(:,iterCol);
+                nGood = sum(strcmp({col.decision},'good photodiode'));
+                L{end+1} = sprintf('  [%-11s] good photodiode %d of %d repeats',...
+                    col(1).variant,nGood,nRep); %#ok<AGROW>
+                if nGood < nRep
+                    %Name every distinct failure, not just the first -- the
+                    %mode of failure is what points at the cause.
+                    other = unique({col(~strcmp({col.decision},'good photodiode')).decision});
+                    for iterF = 1:numel(other)
+                        L{end+1} = sprintf('     also: %s',other{iterF}); %#ok<AGROW>
+                    end
+                end
+                pst = [col.photoSignalTest];
+                L{end+1} = sprintf('     photoSignalTest %.2f-%.2f vs threshold %d',...
+                    min(pst),max(pst),col(1).threshold); %#ok<AGROW>
+                L{end+1} = sprintf('     peaks %s of whiteCt %g   spacing spread %s',...
+                    fmtIntRange([col.nPeaks]),col(1).whiteCt,...
+                    fmtIntRange([col.rangeDiffPeaks])); %#ok<AGROW>
             end
             if latched.whiteCtEstimated
                 L{end+1} = '     (whiteCt estimated from duration, not reported by the stim PC)';
@@ -907,7 +1189,10 @@ cleanupAll();
         end
         if useUDP
             try
-                judp('send',cfg.portNum,cfg.hostIP,int8(10))%leave the dome dark
+                %Only valid after a standard init -- see goDark.
+                if strcmp(stimInitMode,'standard')
+                    judp('send',cfg.portNum,cfg.hostIP,int8(10))%leave the dome dark
+                end
             catch
             end
             if ~isempty(latched.stimFile)
@@ -999,6 +1284,32 @@ try
     end
 catch
     cfg.pezName = sprintf('rig%d',compRef);
+end
+
+end
+
+function m = nanmedianLocal(x)
+%nanmedianLocal median ignoring NaN, without needing the Statistics Toolbox's
+%nanmedian (which is deprecated) or newer median(...,'omitnan').
+
+x = x(~isnan(x));
+if isempty(x)
+    m = NaN;
+else
+    m = median(x);
+end
+
+end
+
+function r = localRange(x)
+%localRange max-min ignoring NaN.  Reported alongside each median so a
+%measurement that varies wildly between repeats is visible as such.
+
+x = x(~isnan(x));
+if numel(x) < 2
+    r = NaN;
+else
+    r = max(x)-min(x);
 end
 
 end
@@ -1210,10 +1521,34 @@ L = struct('dcDark',NaN,'dcWhite',NaN,'dcSwing',NaN,'acPkPk',NaN,...
     'whiteCtEstimated',false,'missedFrames',NaN,'stimFile','',...
     'stimDurationMs',NaN,'leadInSec',NaN,'fcAttenSaturated',false,...
     'whiteClipped',false,'whiteRailFrac',NaN,'whiteDaqClipFrac',NaN,...
+    'repeatTraces',{{}},'repeatWhiteCts',[],'nRepeats',0,'acPkPkSpread',NaN,...
+    'riseSpread',NaN,...
     'cycleTemplate',[],'cycleTime',[],'cycleLo',NaN,...
     'cycleHi',NaN,'darkTrace',[],'whiteTrace',[],'flickerTrace',[],...
     'verdict',[],'verdictError','');
 
+end
+
+function s = fmtSpread(v,unit)
+%fmtSpread Show the across-repeat spread next to a median, or nothing when
+%there is only one repeat to compare.
+
+if isnan(v)
+    s = '';
+else
+    s = sprintf(' (spread %.3f %s)',v,unit);
+end
+end
+
+function s = fmtIntRange(v)
+v = v(~isnan(v));
+if isempty(v)
+    s = '--';
+elseif min(v) == max(v)
+    s = sprintf('%g',v(1));
+else
+    s = sprintf('%g-%g',min(v),max(v));
+end
 end
 
 function s = fmtV(v)
