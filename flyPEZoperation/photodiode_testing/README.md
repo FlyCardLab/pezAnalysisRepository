@@ -44,7 +44,7 @@ amplitude is still enormous. Amplitude is rarely the binding constraint; **edge 
 
 ---
 
-## You cannot do both halves in one session
+## White/Dark and Flicker need different inits
 
 The listener keeps two pieces of state, and each command needs a different one:
 
@@ -53,25 +53,22 @@ The listener keeps two pieces of state, and each command needs a different one:
 | command 0, `'transforming'` | `stimStruct` (warpmap, warpoperator, stimRefROI) | 3/4 → **Flicker** |
 | command 5, `'standard'` | `stimTrigStruct` (gainMatrix, window) | 9/10 → **White / Dark** |
 
-They are mutually destructive. Each opens its own Psychtoolbox window, and opening a
-window invalidates every texture and proxy handle from the previous one. Send a 5 after a
-0 and `stimStruct.warpoperator` is left dangling, so Flicker dies with
-`'transformProxyPtr' argument must be a handle to a proxy object`, returns a partial
-struct, and everything afterwards fails with `Invalid Window (or Texture) Index`.
+Each init opens its own Psychtoolbox window, and opening a window invalidates every
+texture and proxy handle from the previous one. Switching without clearing up is what
+produces `'transformProxyPtr' argument must be a handle to a proxy object` and a console
+full of `Invalid Window (or Texture) Index`.
 
-So `pdLiveMonitor` greys out whatever the current mode cannot drive, and the buttons that
-remain are safe to press. To do the other half: **Reset stim** (command 86), close the
-window, and restart with the other `'InitMode'`.
+**All the buttons work.** Pressing one that needs the other mode first sends command 86
+(`sca` + `PsychStartup`) to tear the stimulus computer down cleanly, then re-inits. That
+takes a few seconds and the projector blanks and comes back — expected, not a fault.
 
-**For the bandwidth question you only need the default `'transforming'` mode.** Rise time
-and fc-from-rise come from the flicker's own cycle average and never touch White/Dark.
-`'standard'` is only needed for the DC swing, which feeds `acPkPk/dcSwing` and
-fc-from-attenuation.
+Group presses by mode to avoid the wait: all the White/Dark work, then all the Flicker
+work. `'InitMode'` sets which one you start in, so you skip one switch.
 
-If the stimulus computer's console is already full of `Invalid Window (or Texture) Index`,
-it is in this mangled state — reset it before trusting anything.
+For the bandwidth question you only need Flicker — rise time and fc-from-rise come from
+the flicker's own cycle average and never touch White/Dark.
 
-## Run order
+## Run order## Run order
 
 ```matlab
 pdSelfTest                      % offline sanity check, no hardware
