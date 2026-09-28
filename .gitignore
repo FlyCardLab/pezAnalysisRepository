@@ -1,0 +1,9 @@
+# macOS
+.DS_Store
+
+# Local Claude / MCP configuration
+.mcp.json
+.claude/
+
+# Serena local project configuration and index
+.serena/
