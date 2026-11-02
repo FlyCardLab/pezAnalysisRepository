@@ -19,7 +19,7 @@ mine = struct('gainMatrixBrighter',b.gainMatrixBrighter,'gainMatrix',b.gainMatri
 ok = true;
 for n = fieldnames(mine)'
     a = double(mine.(n{1})); c = double(f.(n{1}));
-    if ~isequal(size(a),size(c)), d = Inf; else, d = max(abs(a(:)-c(:)),[],'omitnan'); end
+    if ~isequal(size(a),size(c)), d = Inf; else, dd = abs(a(:)-c(:)); d = max([0; dd(~isnan(dd))]); end
     pass = d < 1e-9; ok = ok && pass;
     fprintf('%-20s max abs diff %-12.3g %s\n',n{1},d,passText(pass));
 end

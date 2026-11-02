@@ -6,7 +6,7 @@ function report = calibPatchV3(v3Path,pezName,vals)
 %   back equal after the write; report.backup is the copy to restore from.
 txt = fileread(v3Path);
 lines = regexp(txt,'\r?\n','split');
-eol = '\n'; if contains(txt,sprintf('\r\n')), eol = '\r\n'; end
+eol = '\n'; if ~isempty(strfind(txt,sprintf('\r\n'))), eol = '\r\n'; end
 first = find(~cellfun('isempty',regexp(lines,['^\s*case\s+''' pezName '''(\s|$)'],'once')),1);
 if isempty(first), error('calibPatchV3:nocase','No case %s in %s',pezName,v3Path); end
 last = numel(lines);

@@ -16,8 +16,9 @@ switch action
         root = fscanf(fid,'%s'); fclose(fid);
         varargout{1} = fullfile(root,'pez3000_variables');
     case 'pezList'
-        t = readtable(fullfile(varargin{1},'computer_info.xlsx'));
-        n = height(t);
+        % dataset('XLSFile') is what the rig scripts use to read this file.
+        t = dataset('XLSFile',fullfile(varargin{1},'computer_info.xlsx'));
+        n = size(t,1);
         pezs = struct('name',cell(n,1),'ip',[],'controlName',[]);
         for k = 1:n
             pezs(k).name = ['pez' num2str(t.pez_reference(k))];
