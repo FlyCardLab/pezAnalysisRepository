@@ -23,6 +23,8 @@ fig = figure('Name','Projector calibration (manual)','NumberTitle','off',...
 h = buildTopBar(fig,S.vd);
 h = buildRows(fig,h,S);
 h = buildRightColumn(fig,h);
+[h.logFig,h.logBox] = buildLog();
+set(fig,'DeleteFcn',@(~,~)closeLog(h.logFig));
 h.status = uicontrol('Parent',fig,'Style','text','Position',[10 8 1280 44],...
     'HorizontalAlignment','left','String','');
 S.h = h;
@@ -98,6 +100,23 @@ h.btnSave = uicontrol('Parent',fig,'Style','pushbutton','Position',[920 310 370 
     'String','Save to rig + reload projector','Callback',@(~,~)cbSave(fig));
 h.btnV3 = uicontrol('Parent',fig,'Style','pushbutton','Position',[920 270 370 32],...
     'String','Write values into v3 script','Callback',@(~,~)cbWriteV3(fig));
+h.btnTest = uicontrol('Parent',fig,'Style','pushbutton','Position',[920 220 370 32],...
+    'String','Test projector connection (wake)','Callback',@(~,~)cbTest(fig));
+uicontrol('Parent',fig,'Style','pushbutton','Position',[920 180 370 32],...
+    'String','Show stimulus computer log','Callback',@(~,~)cbShowLog(fig));
+end
+
+function [lf,box] = buildLog()
+ss = get(0,'ScreenSize');
+lf = figure('Name','Stimulus computer log','NumberTitle','off','MenuBar','none',...
+    'Toolbar','none','Position',[max(20,min(1350,ss(3)-560)) 60 540 420],...
+    'CloseRequestFcn',@(src,~)set(src,'Visible','off'));
+box = uicontrol('Parent',lf,'Style','listbox','Units','normalized',...
+    'Position',[0.02 0.02 0.96 0.96],'FontName','FixedWidth','String',{});
+end
+
+function closeLog(lf)
+if ishandle(lf), delete(lf); end
 end
 
 %% ---- state and small helpers -----------------------------------------------
@@ -169,6 +188,41 @@ end
 function tf = confirm(msg,okLabel)
 a = questdlg(regexp(msg,'\n','split'),'Confirm',okLabel,'Cancel','Cancel');
 tf = strcmp(a,okLabel);
+end
+
+function logMsg(fig,msg)
+% One timestamped line in the stimulus computer log window.
+S = getS(fig);
+if ~ishandle(S.h.logBox), return, end
+lines = get(S.h.logBox,'String');
+lines{end+1} = [datestr(now,'HH:MM:SS') '  ' msg];
+set(S.h.logBox,'String',lines,'Value',numel(lines),'ListboxTop',max(1,numel(lines)-15));
+drawnow;
+end
+
+function f = linkLog(fig)
+f = @(m)logMsg(fig,m);
+end
+
+function cbShowLog(fig)
+S = getS(fig);
+set(S.h.logFig,'Visible','on'); figure(S.h.logFig);
+end
+
+function cbTest(fig)
+S = getS(fig);
+if isempty(S.ip), return, end
+set(S.h.logFig,'Visible','on');
+setStatus(fig,['Waking ' S.cur ' projector (' S.ip ') - see the log...']);
+try
+    r = calibProjectorLink('wake',S.ip,linkLog(fig));
+    S.awake = true; putS(fig,S);
+    setStatus(fig,['Projector replied "' r '".']);
+    msgbox(['Stimulus computer ' S.ip ' replied: ' r],'Projector connection');
+catch err
+    setStatus(fig,['Projector connection failed: ' err.message]);
+    errordlg(err.message,'Projector connection failed');
+end
 end
 
 %% ---- loading ---------------------------------------------------------------
@@ -313,7 +367,7 @@ end
 function wakeIfNeeded(fig)
 S = getS(fig);
 if ~S.awake
-    calibProjectorLink('wake',S.ip);
+    calibProjectorLink('wake',S.ip,linkLog(fig));
     S.awake = true; putS(fig,S);
 end
 end
@@ -326,7 +380,7 @@ if ~confirm(sprintf('Send "%s" to %s (%s)?\nThis overwrites %s_im2show.tif only.
         pat,S.cur,S.ip,S.cur),'Send'), return, end
 try
     imwrite(patternImage(S),fullfile(S.vd,[S.cur '_im2show.tif']));
-    wakeIfNeeded(fig); calibProjectorLink('show',S.ip);
+    wakeIfNeeded(fig); calibProjectorLink('show',S.ip,linkLog(fig));
     setStatus(fig,['Sent "' pat '" to ' S.cur '. Rig calibration files unchanged.']);
 catch err
     errordlg(err.message,'Send failed');
@@ -349,7 +403,8 @@ catch err
     errordlg(err.message,'Save failed'); return
 end
 try
-    wakeIfNeeded(fig); calibProjectorLink('reload',S.ip); calibProjectorLink('show',S.ip);
+    wakeIfNeeded(fig); calibProjectorLink('reload',S.ip,linkLog(fig));
+    calibProjectorLink('show',S.ip,linkLog(fig));
     setStatus(fig,['Saved all 14 values for ' S.cur ' and sent reload + display.']);
 catch err
     setStatus(fig,['Saved, but the projector reload failed: ' err.message]);
