@@ -10,7 +10,7 @@ function varargout = calibRigIO(action,varargin)
 switch action
     case 'defaultDir'
         here = fileparts(mfilename('fullpath'));
-        pathFile = fullfile(here,'..','..','flyPEZanalysis','pezFilePath.TXT');
+        pathFile = fullfile(here,'..','..','..','flyPEZanalysis','pezFilePath.TXT');
         fid = fopen(pathFile);
         if fid < 0, varargout{1} = ''; return, end
         root = fscanf(fid,'%s'); fclose(fid);
