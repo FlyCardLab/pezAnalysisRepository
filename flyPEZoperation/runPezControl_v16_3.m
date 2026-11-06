@@ -1012,6 +1012,7 @@ tFun = timer('TimerFcn',@blankFun,'StartDelay',0.3,'Name','tFun');
 
 
 tBeat = []; % pezTrace heartbeat timer
+tAcc = zeros(1,4); % pezTrace tick count and time sums
 runPath = [];
 runFolder = [];
 runStats = struct;
@@ -1648,18 +1649,27 @@ disp('camStartupFun passed')
     end
 %% Timer-related functions
     function dispLiveImage(~,~)
-        if isempty(tBeat) || toc(tBeat) > 5, pezTrace('tPlay alive'), tBeat = tic; end
+        if isempty(tBeat) || toc(tBeat) > 5
+            pezTrace(sprintf('tPlay alive: %d ticks, ms per tick: frame=%.0f fly=%.0f gate+draw=%.0f',...
+                tAcc(1),1e3*tAcc(2:4)/max(tAcc(1),1)))
+            tBeat = tic;
+            tAcc = zeros(1,4);
+        end
+        tTick = tic;
         if itemStates.isRun.cameramonitor
             showLiveFrame
         elseif itemStates.isRun.memplayback
             timerVidFun
         end
         if itemStates.isRun.focus, focusFun, end
+        tFrm = toc(tTick);
         if itemStates.isRun.flydetect, flyDetect, end
+        tFly = toc(tTick);
         if itemStates.isRun.controller
             updateGatePlot
         end
         drawnow
+        tAcc = tAcc+[1,tFrm,tFly-tFrm,toc(tTick)-tFly];
         if itemStates.isRun.liverecord
             im2write = screencapture;
             mov2write = cat(1,mov2write,{im2write});
@@ -3943,8 +3953,10 @@ end
 %% NIDAQ control functions
     function initializeNIDAQ
         %prepare for photodiode acquisition
+        pezTrace('initializeNIDAQ: before daqreset')
         daqreset
         pause(2)
+        pezTrace('initializeNIDAQ: after daqreset and pause')
         if isfield(varsNidaq,'listener')
             delete(varsNidaq.listener)
         end
@@ -3963,10 +3975,13 @@ end
         varsNidaq.recState = 1;
         lh = addlistener(sNidaq,'ErrorOccurred',@(src,event) disp(getReport(event.Error)));
         varsNidaq.listener = lh;
+        pezTrace('initializeNIDAQ: new session ready')
         coupleToCameraCall
     end
     function coupleToCameraCall(~,~)
+        pezTrace('couple: enter')
         drawnow
+        pezTrace('couple: after drawnow')
         testA = get(hPezRandom.couple,'Value') == 1;
         testB = get(hActivation.actCouple,'Value') == 1;
         testC = sNidaq.IsRunning;
@@ -3985,7 +4000,9 @@ end
             stop(sNidaq)
         end
         varsNidaq.recState = 1;
+        pezTrace('couple: before pause')
         pause(0.1)
+        pezTrace('couple: done')
     end
     function trigDetect(~,event)
         recMax = round(max(event.Data(:,2)));
