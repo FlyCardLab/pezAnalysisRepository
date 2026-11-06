@@ -13,7 +13,7 @@ try
     if isempty(logPath), return, end
     fid = fopen(logPath,'a');
     if fid < 0, return, end
-    fprintf(fid,'%s  %s\r\n',datestr(now,'yyyy-mm-dd HH:MM:SS.FFF'),msg);
+    fprintf(fid,'%s  %s  %s\r\n',datestr(now,'yyyy-mm-dd HH:MM:SS.FFF'),getenv('COMPUTERNAME'),msg);
     fclose(fid);
 catch
 end

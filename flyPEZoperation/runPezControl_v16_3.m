@@ -1725,6 +1725,7 @@ disp('camStartupFun passed')
                     itemStates.isRun.controller = false;
                     posOpen = get(hPezSlid.open,'Value');
                     posBlock = get(hPezSlid.block,'Value');
+                    pezTrace('updateGatePlot: no gate data for 60 updates, automatic controller reset')
                     controllerResetCall
                     java.lang.Thread.sleep(5000);
                     itemStates.isRun.cameramonitor = itemStates.shouldRun.cameramonitor;
@@ -4171,6 +4172,8 @@ end
 
 % Communication to MCU
     function receiveData(~,~)
+        tRx = tic;
+        nRxBefore = sPez.BytesAvailable;
         token = fscanf(sPez,'%s',4);
         switch token
             case '$GS,'
@@ -4188,6 +4191,9 @@ end
                 MCUvar_htData = fscanf(sPez);
             case '$FB,'
                 MCUvar_cooler = fscanf(sPez);
+        end
+        if toc(tRx) > 0.5
+            pezTrace(sprintf('receiveData slow: %.2f s, token=%s, bytes before=%d after=%d',toc(tRx),token,nRxBefore,sPez.BytesAvailable))
         end
     end
 
