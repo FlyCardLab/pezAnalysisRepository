@@ -9,11 +9,16 @@ persistent logPath
 try
     if nargin > 1
         logPath = fullfile(logDir,'pezFreezeTrace.log');
+        diary(fullfile(logDir,'pezConsole.log')) % saves Command Window text
+        diary on
     end
     if isempty(logPath), return, end
     fid = fopen(logPath,'a');
     if fid < 0, return, end
-    fprintf(fid,'%s  %s  %s\r\n',datestr(now,'yyyy-mm-dd HH:MM:SS.FFF'),getenv('COMPUTERNAME'),msg);
+    st = dbstack;
+    names = strrep({st.name},'runPezControl_v16_3/','');
+    chain = strjoin(names(2:min(end,8)),' < ');
+    fprintf(fid,'%s  %s  %s    [%s]\r\n',datestr(now,'yyyy-mm-dd HH:MM:SS.FFF'),getenv('COMPUTERNAME'),msg,chain);
     fclose(fid);
 catch
 end
