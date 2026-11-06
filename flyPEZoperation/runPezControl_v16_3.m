@@ -970,6 +970,15 @@ hROICorners = plot(nan(1,4),nan(1,4),'Marker','s','MarkerSize',8,...
     'MarkerFaceColor',[1 1 0],'MarkerEdgeColor',[0 0 0],...
     'LineStyle','none','Parent',hAxesA,'HitTest','on',...
     'ButtonDownFcn',@startDragROICorner,'Visible','off');
+% Handles for the top (prism base) line: left end, right end, center.
+% Ends move one side of the line, the center moves the whole line.
+hStageHandles = plot(nan(1,3),nan(1,3),'Marker','o','MarkerSize',8,...
+    'MarkerFaceColor',[0 1 1],'MarkerEdgeColor',[0 0 0],...
+    'LineStyle','none','Parent',hAxesA,'HitTest','on',...
+    'ButtonDownFcn',@startDragStage,'Visible','off');
+stageDragNdx = [];
+stageDragAnchorPoint = [];
+stageDragAnchorEnds = [];
 roiDragMode = '';
 roiDragCornerNdx = [];
 roiDragAnchorPoint = [];
@@ -1800,6 +1809,12 @@ disp('camStartupFun passed')
         cornerY = roiPos([2 2 4 4]);
         set(hROICorners,'XData',cornerX,'YData',cornerY)
         set(hROIBody,'XData',cornerX,'YData',cornerY)
+        updateStageHandles
+    end
+    function updateStageHandles
+        if numel(stagePos) < 2, return, end
+        set(hStageHandles,'XData',[stagePos(1,1) stagePos(end,1) mean(stagePos([1 end],1))],...
+            'YData',[stagePos(1,2) stagePos(end,2) mean(stagePos([1 end],2))])
     end
     function hDispROICall(~,~)
         if isempty(roiPos)
@@ -1813,11 +1828,13 @@ disp('camStartupFun passed')
                 set(hPlotROI,'Visible','off')
                 set(hROICorners,'Visible','off')
                 set(hROIBody,'Visible','off')
+                set(hStageHandles,'Visible','off')
             case 1
                 set(hPlotROI,'XData',[xROI(:);NaN;stagePos(:,1)],...
                     'YData',[yROI(:);NaN;stagePos(:,2)],'Visible','on')
                 set(hROICorners,'Visible','on')
                 set(hROIBody,'Visible','on')
+                set(hStageHandles,'Visible','on')
         end
     end
     function highlightBackground(~,~)
@@ -2609,6 +2626,55 @@ end
             newPos([2 4]) = [double(nCam.nHeight)-boxH,double(nCam.nHeight)];
         end
         roiPos = newPos;
+        refreshROIderived
+    end
+% Mouse-drag editing of the top (prism base) line.  Auto ROI sets stagePos
+% (drawn, saved as prism_base) and stageTab(3:6) (stage and focus windows)
+% together, so applyStageEnds sets both from the two end points.
+    function startDragStage(~,~)
+        if numel(stagePos) < 2
+            warning('first set autoROI')
+            return
+        end
+        cp = get(hAxesA,'CurrentPoint');
+        clickPt = cp(1,1:2);
+        handX = get(hStageHandles,'XData');
+        handY = get(hStageHandles,'YData');
+        [~,stageDragNdx] = min((handX-clickPt(1)).^2+(handY-clickPt(2)).^2);
+        stageDragAnchorPoint = clickPt;
+        stageDragAnchorEnds = [stagePos(1,:),stagePos(end,:)];
+        roiDragMode = 'stage';
+        set(hFigA,'WindowButtonMotionFcn',@dragStage,'WindowButtonUpFcn',@stopDragROI)
+    end
+    function dragStage(~,~)
+        minW = 20;
+        maxX = double(nCam.nWidth);
+        minY = 101;% stageTab(5) = mean line y - 100 must stay >= 1
+        maxY = double(nCam.nHeight);
+        ends = stageDragAnchorEnds;
+        cp = get(hAxesA,'CurrentPoint');
+        if stageDragNdx == 3
+            deltaX = round(cp(1,1)-stageDragAnchorPoint(1));
+            deltaY = round(cp(1,2)-stageDragAnchorPoint(2));
+            deltaX = min(max(deltaX,1-round(ends(1))),maxX-round(ends(3)));
+            deltaY = min(max(deltaY,minY-min(ends([2 4]))),maxY-max(ends([2 4])));
+            ends = ends+[deltaX deltaY deltaX deltaY];
+        else
+            newX = min(max(round(cp(1,1)),1),maxX);
+            newY = min(max(round(cp(1,2)),minY),maxY);
+            if stageDragNdx == 1
+                ends(1:2) = [min(newX,round(ends(3))-minW),newY];
+            else
+                ends(3:4) = [max(newX,round(ends(1))+minW),newY];
+            end
+        end
+        applyStageEnds(ends)
+    end
+    function applyStageEnds(ends)
+        xs = (round(ends(1)):round(ends(3)))';
+        ys = ends(2)+(xs-xs(1))*(ends(4)-ends(2))/(xs(end)-xs(1));
+        stagePos = [xs,ys];
+        stageTab(3:6) = round([min(xs),max(xs),mean(ys)-100,mean(ys)-10]);
         refreshROIderived
     end
     function stopDragROI(~,~)
