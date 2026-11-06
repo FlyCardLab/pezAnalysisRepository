@@ -1011,6 +1011,7 @@ tExpt = timer('TimerFcn',@stopexptCallback,'StartDelay',20*60,'Name','tExpt');
 tFun = timer('TimerFcn',@blankFun,'StartDelay',0.3,'Name','tFun');
 
 
+tBeat = []; % pezTrace heartbeat timer
 runPath = [];
 runFolder = [];
 runStats = struct;
@@ -1040,6 +1041,8 @@ itemStates = struct('isAvail',initStates,'isRun',initStates,'shouldRun',initStat
 
 set(hFigA,'CloseRequestFcn',@myCloseFun)
 
+pezTrace('init',data_dir)
+pezTrace('GUI startup')
 disp('camStartupFun called')
 camStartupFun
 disp('camStartupFun passed')
@@ -1224,6 +1227,7 @@ disp('camStartupFun passed')
 
     function controllerResetCall(~,~)
         % Setup the serial
+        pezTrace('controllerReset: open serial')
         delete(instrfindall)
         sPez = serial(comRef);
         set(sPez,'baudrate',250000,'inputbuffersize',100*(128+3),...
@@ -1547,7 +1551,9 @@ disp('camStartupFun passed')
             backgrFrm = [];
             runEventLog('Run timer started')
             start(tExpt)
+            pezTrace('runExpt: before runAutoPilotCall')
             runAutoPilotCall([],[])
+            pezTrace('runExpt: after runAutoPilotCall')
             if get(hGateMode.parent,'SelectedObject') ~= hGateMode.child(2)
                 set(hGateMode.parent,'SelectedObject',hGateMode.child(2))
                 hAutoButtonCallback([],[])
@@ -1556,6 +1562,7 @@ disp('camStartupFun passed')
                 set(hGateState.parent,'SelectedObject',hGateState.child(1))
                 gateSelectCallback([],[])
             end
+            pezTrace('runExpt: done')
             set(hExptEntry.experiment,'enable','off')
         end
     end
@@ -1641,6 +1648,7 @@ disp('camStartupFun passed')
     end
 %% Timer-related functions
     function dispLiveImage(~,~)
+        if isempty(tBeat) || toc(tBeat) > 5, pezTrace('tPlay alive'), tBeat = tic; end
         if itemStates.isRun.cameramonitor
             showLiveFrame
         elseif itemStates.isRun.memplayback
@@ -1997,10 +2005,13 @@ disp('camStartupFun passed')
         else    
             itemStates.isRun.cameramonitor = false;
             detectTabs = 0;
+            pezTrace('autopilot: before sweep')
             hSweepGateCallback
             java.lang.Thread.sleep(1000);
+            pezTrace('autopilot: before camStateCallback(3)')
             set(hCamStates.parent,'SelectedObject',hCamStates.children(3))
             camStateCallback([],[])
+            pezTrace('autopilot: after camStateCallback(3)')
             if get(hPezRandom.retain,'Value') == 0
                 if get(hGateState.parent,'SelectedObject') ~= hGateState.child(1)
                     set(hGateState.parent,'SelectedObject',hGateState.child(1))
@@ -2008,10 +2019,12 @@ disp('camStartupFun passed')
                 end
             end
             coupleToCameraCall
+            pezTrace('autopilot: after coupleToCameraCall')
             set(hPezRandom.flydetect,'Value',1)
             setFlydetectCall([],[])
             if strcmp(tExpt.Running,'off'), saveRun, end
             runEventLog('Autopilot reset complete')
+            pezTrace('autopilot: complete')
         end
         disp('Autopilot initialization complete')
     end
@@ -2776,6 +2789,7 @@ end
     function camStateCallback(~,~)
         if strcmp(tPlay.Running,'on'),stop(tPlay),end
         disp('camStateCallback started')
+        pezTrace('camState: start')
         if strcmp(get(hCamPlaybackSlider,'enable'),'on')
             itemStates.isRun.memplayback = false;
             set(hCamPlayback.parent,'SelectedObject',[])
@@ -2795,6 +2809,7 @@ end
         switch caseVal
             case 1
                 while nStatus ~= PDC.STATUS_LIVE
+                    pezTrace(sprintf('camState: wait LIVE, status=%d err=%d',nStatus,nErrorCode))
                     [nRet,nErrorCode] = PDC_SetStatus(nCam.DeviceNo,PDC.STATUS_LIVE);
                     errorCodeTest(nRet,nErrorCode)
                     java.lang.Thread.sleep(200);
@@ -2812,10 +2827,13 @@ end
                 if get(hPezRandom.retain,'Value') == 0
                     backgrFrm = [];
                 end
+                pezTrace('camState3: before makeBackgroundFrame')
                 makeBackgroundFrame
+                pezTrace('camState3: after makeBackgroundFrame')
                 nTrigRef = get(hCamPop.trigmode,'Value');
                 if nTrigRef == 1
                     while nStatus ~= PDC.STATUS_RECREADY
+                        pezTrace(sprintf('camState3: wait RECREADY, status=%d err=%d',nStatus,nErrorCode))
                         [nRet,nErrorCode] = PDC_SetRecReady(nCam.DeviceNo);
                         errorCodeTest(nRet,nErrorCode)
                         java.lang.Thread.sleep(200);
@@ -2825,6 +2843,7 @@ end
                     [nRet,nMode,nErrorCode] = PDC_GetExternalOutMode(nCam.DeviceNo,1);
                     errorCodeTest(nRet,nErrorCode)
                     while nMode ~= PDC.EXT_OUT_RECORD_NEGA
+                        pezTrace(sprintf('camState3: wait EXTOUT, mode=%d err=%d',nMode,nErrorCode))
                         [nRet, nErrorCode] = PDC_SetExternalOutMode(nCam.DeviceNo,1,PDC.EXT_OUT_RECORD_NEGA);
                         errorCodeTest(nRet,nErrorCode)
                         java.lang.Thread.sleep(200);
@@ -2833,6 +2852,7 @@ end
                     end
                 else
                     while nStatus ~= PDC.STATUS_ENDLESS
+                        pezTrace(sprintf('camState3: wait ENDLESS, status=%d err=%d',nStatus,nErrorCode))
                         [nRet,nErrorCode] = PDC_SetRecReady(nCam.DeviceNo);
                         errorCodeTest(nRet,nErrorCode)
                         [nRet,nErrorCode] = PDC_SetEndless(nCam.DeviceNo);
@@ -2849,6 +2869,7 @@ end
         end
         if strcmp(tPlay.Running,'off'),start(tPlay),end
         disp('camStateCallback completed')
+        pezTrace('camState: complete')
     end
     function partcountCallback(~,~)
         if strcmp(tPlay.Running,'on'),stop(tPlay),end
@@ -2973,6 +2994,7 @@ end
     function triggerCallback(~,~)
         if strcmp(tPlay.Running,'on'),stop(tPlay),end
         disp('triggerCallback started')
+        pezTrace('trigger: start')
         itemStates.isRun.cameramonitor = false;
         itemStates.isRun.flydetect = false;
         if strcmp(tDet.Running,'on'),stop(tDet),end
@@ -2999,6 +3021,7 @@ end
             if strcmp(tPlay.Running,'off'),start(tPlay),end
         end
         disp('triggerCallback complete')
+        pezTrace('trigger: complete')
     end
     function reviewMemoryCallback(~,~)
         disp('reviewMemoryCallback started')
@@ -3952,8 +3975,10 @@ end
             varsNidaq.nidaqDataC = zeros(sNidaq.NotifyWhenDataAvailableExceeds,2);
             varsNidaq.recData = zeros(sNidaq.NotifyWhenDataAvailableExceeds,1);
             if ~testC
+                pezTrace('couple: before prepare/startBackground')
                 prepare(sNidaq)
                 sNidaq.startBackground();
+                pezTrace('couple: after startBackground')
             end
         elseif testC && ~(testA || testB)
             stop(sNidaq)
