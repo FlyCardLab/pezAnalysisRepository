@@ -8,8 +8,16 @@ function pezTrace(msg,logDir)
 persistent logPath
 try
     if nargin > 1
+        if ~isdir(logDir), mkdir(logDir), end
         logPath = fullfile(logDir,'pezFreezeTrace.log');
-        diary(fullfile(logDir,'pezConsole.log')) % saves Command Window text
+        consolePath = fullfile(logDir,'pezConsole.log');
+        for oldPath = {logPath,consolePath} % keep each file under about 20 MB
+            fileInfo = dir(oldPath{1});
+            if ~isempty(fileInfo) && fileInfo.bytes > 20e6
+                movefile(oldPath{1},[oldPath{1} '.old'],'f')
+            end
+        end
+        diary(consolePath) % saves Command Window text
         diary on
     end
     if isempty(logPath), return, end

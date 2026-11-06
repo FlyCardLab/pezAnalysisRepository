@@ -1042,7 +1042,7 @@ itemStates = struct('isAvail',initStates,'isRun',initStates,'shouldRun',initStat
 
 set(hFigA,'CloseRequestFcn',@myCloseFun)
 
-pezTrace('init',data_dir)
+pezTrace('init',fullfile('C:','Users',localUserName,'Documents','pezLogs')) % local disk, not the network share
 pezTrace('GUI startup')
 disp('camStartupFun called')
 camStartupFun
