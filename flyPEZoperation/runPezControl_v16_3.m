@@ -1655,6 +1655,7 @@ disp('camStartupFun passed')
             tBeat = tic;
             tAcc = zeros(1,4);
         end
+        try % pezTrace: log the error and its line, then rethrow unchanged
         tTick = tic;
         if itemStates.isRun.cameramonitor
             showLiveFrame
@@ -1674,6 +1675,13 @@ disp('camStartupFun passed')
             im2write = screencapture;
             mov2write = cat(1,mov2write,{im2write});
             time2write = cat(1,time2write,now);
+        end
+        catch MEtick
+            errText = strrep(getReport(MEtick,'extended','hyperlinks','off'),char(10),' | ');
+            pezTrace(['tPlay ERROR: ' errText])
+            pezTrace(sprintf('tPlay ERROR state: size(frmData)=%s roiPos=%s stageTab=%s flydetect=%d',...
+                mat2str(size(frmData)),mat2str(roiPos),mat2str(stageTab(:)'),itemStates.isRun.flydetect))
+            rethrow(MEtick)
         end
     end
     function showLiveFrame
